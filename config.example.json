@@ -1,0 +1,32 @@
+{
+  "feishu_webhook": "https://open.feishu.cn/open-apis/bot/v2/hook/YOUR_WEBHOOK_TOKEN",
+  "watchlist": [
+    { "code": "510300", "name": "沪深300ETF" },
+    { "code": "510050", "name": "上证50ETF" },
+    { "code": "159915", "name": "创业板ETF" },
+    { "code": "588000", "name": "科创50ETF" },
+    { "code": "512100", "name": "中证1000ETF" }
+  ],
+  "index_code": "sh000001",
+  "index_name": "上证指数",
+  "rules": [
+    {
+      "cooldown_minutes": 120,
+      "enabled": true,
+      "message": "市场情绪已降至30以下(冰点)，可关注沪深300ETF(510300)的买入机会",
+      "metric": "sentiment",
+      "name": "情绪冰点买沪深300ETF",
+      "op": "<",
+      "value": 30
+    },
+    {
+      "cooldown_minutes": 120,
+      "enabled": true,
+      "message": "市场情绪已超80(过热)，短线注意追高风险，做好止盈",
+      "metric": "sentiment",
+      "name": "情绪过热风险提示",
+      "op": ">",
+      "value": 80
+    }
+  ]
+}

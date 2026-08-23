@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>牛头图标候选对比 · 牛来</title>
+<style>
+  :root{--bg:#0d1220;--card:#151c2e;--border:#232d45;--txt:#e8eefc;--mut:#8a97b5;--cyan:#00e5ff;--amber:#ffc24b}
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--txt);font-family:-apple-system,"Microsoft YaHei",sans-serif;padding:32px 24px;min-height:100vh}
+  h1{font-size:22px;text-align:center;margin-bottom:4px}
+  .sub{text-align:center;color:var(--mut);font-size:13px;margin-bottom:28px}
+  .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:18px;max-width:1080px;margin:0 auto}
+  .col{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:20px;display:flex;flex-direction:column;align-items:center;gap:16px}
+  .tag{font-size:14px;font-weight:700;color:var(--cyan)}
+  .tag small{display:block;font-weight:400;color:var(--mut);margin-top:3px}
+  .big{width:150px;height:150px;border-radius:12px;background:#080c16;border:1px solid var(--border);display:flex;align-items:center;justify-content:center;overflow:hidden}
+  .big img,.big svg{width:100%;height:100%;object-fit:contain}
+  .big img.photo{object-fit:cover}
+  .sizes{display:flex;align-items:center;gap:16px}
+  .sz{display:flex;flex-direction:column;align-items:center;gap:6px;color:var(--mut);font-size:11px}
+  .sz .frame{width:44px;height:44px;border-radius:8px;background:#080c16;border:1px solid var(--border);display:flex;align-items:center;justify-content:center;overflow:hidden}
+  .sz img,.sz svg{max-width:100%;max-height:100%}
+  .sz.sm .frame{width:36px;height:36px}
+  .sz.sm2 .frame{width:26px;height:26px}
+  .hint{text-align:center;color:var(--mut);font-size:13px;margin-top:26px;line-height:1.7}
+  .hint b{color:var(--amber)}
+</style>
+</head>
+<body>
+  <h1>🐂 牛头图标候选对比</h1>
+  <div class="sub">形状均为「完整牛头含双角」· 请回复 A / B / C 告诉我选哪个</div>
+
+  <div class="grid">
+    <div class="col">
+      <div class="tag">方案 A<small>手绘 SVG（矢量，任意尺寸清晰）</small></div>
+      <div class="big"><img src="logo_svg.svg" alt="A"></div>
+      <div class="sizes">
+        <div class="sz sm2"><div class="frame"><img src="logo_svg.svg"></div>26px</div>
+        <div class="sz sm"><div class="frame"><img src="logo_svg.svg"></div>36px</div>
+      </div>
+    </div>
+
+    <div class="col">
+      <div class="tag">方案 B<small>AI 写实还原（保留 3D 质感）</small></div>
+      <div class="big"><img class="photo" src="logo_realistic.jpg" alt="B"></div>
+      <div class="sizes">
+        <div class="sz sm2"><div class="frame"><img class="photo" src="logo_realistic.jpg"></div>26px</div>
+        <div class="sz sm"><div class="frame"><img class="photo" src="logo_realistic.jpg"></div>36px</div>
+      </div>
+    </div>
+
+    <div class="col">
+      <div class="tag">方案 C<small>AI 扁平图标（简洁现代）</small></div>
+      <div class="big"><img class="photo" src="logo_flat.jpg" alt="C"></div>
+      <div class="sizes">
+        <div class="sz sm2"><div class="frame"><img class="photo" src="logo_flat.jpg"></div>26px</div>
+        <div class="sz sm"><div class="frame"><img class="photo" src="logo_flat.jpg"></div>36px</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="hint">上方「26px / 36px」即顶栏品牌图标的<b>实际显示大小</b>预览。<br>选定后我会把它替换到顶栏 ⚡ 位置（你也可以要求再微调颜色/表情）。</div>
+</body>
+</html>

@@ -1,0 +1,25 @@
+# 敏感配置（含飞书 webhook 密钥，勿提交）
+config.json
+
+# 本地数据缓存
+data/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.log
+.venv/
+venv/
+
+# IDE / 编辑器
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+
+# 系统
+.DS_Store
+Thumbs.db

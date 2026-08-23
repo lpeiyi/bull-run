@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <defs>
+    <linearGradient id="horn" x1="0" y1="1" x2="1" y2="0">
+      <stop offset="0" stop-color="#4a3f5c"/>
+      <stop offset="1" stop-color="#6b5b7a"/>
+    </linearGradient>
+  </defs>
+  <!-- 双角 -->
+  <path d="M25 36 C14 27 5 13 7 3 C17 7 30 17 38 30 Z" fill="url(#horn)"/>
+  <path d="M75 36 C86 27 95 13 93 3 C83 7 70 17 62 30 Z" fill="url(#horn)"/>
+  <!-- 外耳 -->
+  <ellipse cx="18" cy="48" rx="10" ry="13" fill="#f4b942"/>
+  <ellipse cx="82" cy="48" rx="10" ry="13" fill="#f4b942"/>
+  <!-- 内耳 -->
+  <ellipse cx="18" cy="48" rx="5" ry="8" fill="#f0b8c4"/>
+  <ellipse cx="82" cy="48" rx="5" ry="8" fill="#f0b8c4"/>
+  <!-- 脸 -->
+  <ellipse cx="50" cy="58" rx="33" ry="31" fill="#f4b942"/>
+  <!-- 鼻口区 -->
+  <ellipse cx="50" cy="70" rx="20" ry="15" fill="#b9b3d8"/>
+  <!-- 鼻孔 -->
+  <ellipse cx="42" cy="68" rx="3" ry="4.6" fill="#3a3448" transform="rotate(-18 42 68)"/>
+  <ellipse cx="58" cy="68" rx="3" ry="4.6" fill="#3a3448" transform="rotate(18 58 68)"/>
+  <!-- 嘴 -->
+  <path d="M50 78 Q45 84 40 81 M50 78 Q55 84 60 81" stroke="#3a3448" stroke-width="2.4" fill="none" stroke-linecap="round"/>
+  <!-- 眼睛（半睁慵懒弧线） -->
+  <path d="M27 47 Q35 52 43 47" stroke="#3a3448" stroke-width="4" fill="none" stroke-linecap="round"/>
+  <path d="M57 47 Q65 52 73 47" stroke="#3a3448" stroke-width="4" fill="none" stroke-linecap="round"/>
+  <!-- 眉毛（慵懒平眉） -->
+  <path d="M31 38 L45 41 M55 41 L69 38" stroke="#3a3448" stroke-width="2.4" stroke-linecap="round"/>
+</svg>

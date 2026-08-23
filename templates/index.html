@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>牛来</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div class="topbar">
+  <div class="brand"><img class="bull-logo" src="/static/logo_candidates/logo_realistic.jpg" alt="牛来"><span class="dot">牛来</span></div>
+  <div class="tabs">
+    <div class="tab on" data-page="overview">市场概览</div>
+    <div class="tab" data-page="backtest">指标回测</div>
+    <div class="tab" data-page="sentiment">市场情绪</div>
+    <div class="tab" data-page="rules">推送规则</div>
+    <div class="tab" data-page="watch">自选看板</div>
+  </div>
+  <div class="sp"></div>
+  <button class="btn ghost sm" id="ov-refresh">刷新概览</button>
+  <div id="clock" class="mono"></div>
+</div>
+
+<div class="wrap">
+
+  <!-- ═══ 市场概览（首页） ═══ -->
+  <div class="page on" id="page-overview">
+    <div class="idx-strip" id="ov-indexes">
+      <div class="idx-card"><div class="nm">加载中…</div><div class="px mono">--</div></div>
+    </div>
+
+    <div class="card">
+      <h3>指数K线 <span class="hint mono" id="ik-name">--</span></h3>
+      <div class="toolbar">
+        <div class="field"><label>指数</label>
+          <select id="ik-code">
+            <option value="sh000001">上证指数</option>
+            <option value="sz399001">深证成指</option>
+            <option value="sz399006">创业板指</option>
+            <option value="sh000688">科创50</option>
+            <option value="sh000016">上证50</option>
+            <option value="sh000905">中证500</option>
+            <option value="sh000300">沪深300</option>
+            <option value="sh000852">中证1000</option>
+          </select>
+        </div>
+        <div class="seg" id="ik-range">
+          <button class="seg-btn" data-days="60">近60日</button>
+          <button class="seg-btn on" data-days="120">近120日</button>
+          <button class="seg-btn" data-days="250">近250日</button>
+        </div>
+      </div>
+      <div id="index-kline-chart" class="chart-big"></div>
+      <div class="note">蜡烛图 + MA5/10/20 均线；下方副图为成交量。红涨绿跌。</div>
+    </div>
+
+    <div class="card">
+      <h3>市场量能 <span class="hint mono" id="ln-date">--</span><a class="ln-hist" id="ln-toggle">历史量能</a></h3>
+      <div class="ln-metrics">
+        <div class="ln-m">
+          <div class="ln-lbl"><span class="ln-ic swap">⇄</span>沪深 | 实际量能</div>
+          <div class="ln-val mono" id="ln-actual">--</div>
+        </div>
+        <div class="ln-m">
+          <div class="ln-lbl"><span class="ln-ic prog"></span>今日 | 预测量能</div>
+          <div class="ln-val mono" id="ln-predict">--</div>
+          <div class="ln-chg mono" id="ln-change">--</div>
+        </div>
+        <div class="ln-m">
+          <div class="ln-lbl"><span class="ln-ic base"></span>昨日 | 总量能</div>
+          <div class="ln-val mono" id="ln-yesterday">--</div>
+        </div>
+      </div>
+      <div id="liangneng-chart" class="chart-big"></div>
+      <div class="note">橙色曲线 = 当日预测量能相对昨日总量能的变化走势（红放量 · 绿缩量）。点「历史量能」可切换近20日两市成交额。</div>
+    </div>
+
+    <div class="overview-grid">
+      <div class="card sent-card">
+        <h3>市场情绪 <span class="hint mono" id="ov-date"></span></h3>
+        <div class="sent-head">
+          <div class="sent-scorebox">
+            <div class="sent-score mono" id="ov-score">--</div>
+            <div class="sent-level" id="ov-level">--</div>
+          </div>
+          <div class="sent-gauge">
+            <div class="gauge-track"><div class="gauge-fill" id="ov-gauge"></div></div>
+            <div class="gauge-scale"><span>0 冰点</span><span>50 正常</span><span>100 过热</span></div>
+          </div>
+        </div>
+        <div class="sent-stats" id="ov-dims"></div>
+        <div class="tip" id="ov-tip">--</div>
+      </div>
+      <div class="card">
+        <h3>炸板股 <span class="hint mono" id="ov-zb-count"></span></h3>
+        <div class="tbl-wrap"><table class="tbl" id="ov-zb"></table></div>
+      </div>
+      <div class="card">
+        <h3>跌停股 <span class="hint mono" id="ov-dt-count"></span></h3>
+        <div class="tbl-wrap"><table class="tbl" id="ov-dt"></table></div>
+      </div>
+      <div class="card">
+        <h3>热点板块 <span class="hint">行业涨幅榜 Top10</span></h3>
+        <div class="tbl-wrap"><table class="tbl" id="ov-boards"></table></div>
+      </div>
+      <div class="card">
+        <h3>涨停梯队 <span class="hint" id="ov-ladder"></span></h3>
+        <div class="tbl-wrap"><table class="tbl" id="ov-zt"></table></div>
+      </div>
+      <div class="card">
+        <h3>热门概念 <span class="hint">概念涨幅榜 Top10</span></h3>
+        <div class="tbl-wrap"><table class="tbl" id="ov-concept"></table></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══ 指标回测 ═══ -->
+  <div class="page" id="page-backtest">
+    <div class="card">
+      <h3>回测一只标的 <span class="hint">用技术指标的历史信号，验证它在过去的收益表现</span></h3>
+      <div class="row">
+        <div class="field"><label>标的代码</label>
+          <input id="bt-code" class="mono" placeholder="如 510300 / 600519 / 159915" value="510300">
+        </div>
+        <div class="field"><label>技术指标</label>
+          <select id="bt-indicator">
+            <option value="macd">MACD 金叉死叉</option>
+            <option value="kdj">KDJ 金叉死叉</option>
+            <option value="rsi">RSI 超买超卖</option>
+            <option value="boll">布林带 均值回归</option>
+            <option value="ma">均线 趋势跟踪</option>
+          </select>
+        </div>
+        <div class="field" id="bt-params-box"></div>
+        <div class="field"><label>回测天数</label><input id="bt-days" class="mono" type="number" value="250" min="30" max="1000"></div>
+        <button class="btn" id="bt-run">开始回测</button>
+      </div>
+    </div>
+
+    <div class="stat-grid" id="bt-stats" style="display:none"></div>
+    <div class="card" id="bt-chart-card" style="display:none">
+      <h3>资金曲线 <span class="hint">策略净值 vs 买入持有</span></h3>
+      <div id="chart"></div>
+    </div>
+    <div class="card" id="bt-trades-card" style="display:none">
+      <h3>交易明细</h3>
+      <div class="tbl-wrap"><table class="tbl" id="bt-trades"></table></div>
+    </div>
+  </div>
+
+  <!-- ═══ 市场情绪 ═══ -->
+  <div class="page" id="page-sentiment">
+    <div class="card">
+      <h3>短线市场情绪 <span class="hint mono" id="se-date"></span></h3>
+      <div class="sent-row">
+        <div class="sent-score mono" id="se-score">--</div>
+        <div class="sent-meta">
+          <div class="sent-level" id="se-level">--</div>
+          <div class="sent-dims" id="se-dims"></div>
+        </div>
+      </div>
+    </div>
+    <div class="card">
+      <h3>情绪 × 指数走势 <span class="hint">指数按窗口首日=100%归一化，看情绪与指数是否共振</span></h3>
+      <div style="display:flex;align-items:flex-end;gap:16px;flex-wrap:wrap">
+        <div class="seg" id="se-range" style="margin-bottom:0">
+          <button class="seg-btn on" data-days="15">近15日</button>
+          <button class="seg-btn" data-days="60">近3月</button>
+          <button class="seg-btn" data-days="120">近半年</button>
+          <button class="seg-btn" data-days="250">近1年</button>
+          <button class="seg-btn" data-days="0">全部(2020至今)</button>
+        </div>
+        <div class="field">
+          <label>冰点阈值（≤，可改）</label>
+          <input id="ice-threshold" class="mono" type="number" value="30" min="0" max="100" style="min-width:80px">
+        </div>
+      </div>
+      <div id="emotion-chart" style="height:430px"></div>
+      <div class="note">情绪分（左轴 0~100，蓝色面积）｜涨停家数（副图柱状）｜指数归一化涨幅（右轴 %，图例可勾选叠加）。双击图例可只看单项。历史主因子（涨停/跌停/炸板率）取自乐咕乐股，近15日叠加东财连板高度与晋级率。</div>
+      <div style="text-align:right"><button class="btn ghost" id="se-refresh">重新计算（约30秒）</button></div>
+    </div>
+    <div class="card">
+      <h3>情绪低点 · 次日指数表现 <span class="hint" id="ln-hint">情绪分 ≤30（冰点）当日收盘 → 下一交易日收盘涨跌幅</span></h3>
+      <div class="seg" id="ln-days">
+        <button class="seg-btn" data-days="15">近15日</button>
+        <button class="seg-btn" data-days="60">近3月</button>
+        <button class="seg-btn" data-days="120">近半年</button>
+        <button class="seg-btn" data-days="250">近1年</button>
+        <button class="seg-btn on" data-days="0">全部(2020至今)</button>
+      </div>
+      <div class="seg" id="ln-range" style="margin-bottom:12px"></div>
+      <div class="stat-grid" id="ln-stats" style="margin-bottom:14px"></div>
+      <div id="low-next-chart" style="height:260px"></div>
+      <div class="note">每根柱子 = 一次冰点后的次日该指数涨跌幅（红涨绿跌）。样本取自上方所选时间窗口内的冰点日，基于各指数日K全量历史计算。</div>
+    </div>
+  </div>
+
+  <!-- ═══ 推送规则 ═══ -->
+  <div class="page" id="page-rules">
+    <div class="card">
+      <h3>飞书机器人 <span class="hint">触发提醒会推送到这里</span></h3>
+      <div class="row">
+        <div class="field" style="flex:1"><label>飞书机器人 webhook 地址</label>
+          <input id="fe-webhook" class="wide" style="min-width:100%" placeholder="https://open.feishu.cn/open-apis/bot/v2/hook/xxxx">
+        </div>
+        <button class="btn" id="fe-save">保存</button>
+      </div>
+      <div class="note">在飞书群里「设置 → 群机器人 → 添加自定义机器人」可拿到 webhook。</div>
+    </div>
+
+    <div class="card">
+      <h3>推送规则列表</h3>
+      <div class="tbl-wrap"><table class="tbl">
+        <thead><tr><th>名称</th><th>条件</th><th>阈值</th><th>冷却</th><th>提醒内容</th><th>启用</th><th></th></tr></thead>
+        <tbody id="rules-tbody"></tbody>
+      </table></div>
+    </div>
+
+    <div class="card">
+      <h3>添加规则 <span class="hint">当指标满足条件时，推送一条提醒</span></h3>
+      <div class="row">
+        <div class="field"><label>规则名称</label><input id="r-name" style="min-width:180px" placeholder="如 情绪冰点提醒"></div>
+        <div class="field"><label>指标</label>
+          <select id="r-metric">
+            <option value="sentiment">市场情绪分</option>
+            <option value="break_rate">炸板率(%)</option>
+            <option value="promo_rate">晋级率(%)</option>
+            <option value="zt_count">涨停家数</option>
+            <option value="max_height">最高连板</option>
+            <option value="index_pct">上证指数涨幅(%)</option>
+          </select>
+        </div>
+        <div class="field"><label>条件</label>
+          <select id="r-op">
+            <option value="<">小于</option>
+            <option value="<=">小于等于</option>
+            <option value=">">大于</option>
+            <option value=">=">大于等于</option>
+            <option value="==">等于</option>
+          </select>
+        </div>
+        <div class="field"><label>阈值</label><input id="r-value" class="mono" type="number" value="30"></div>
+        <div class="field"><label>冷却(分钟)</label><input id="r-cooldown" class="mono" type="number" value="120"></div>
+      </div>
+      <div class="row" style="margin-top:12px">
+        <div class="field" style="flex:1"><label>提醒内容</label>
+          <input id="r-message" class="wide" style="min-width:100%" placeholder="市场情绪已降至冰点，可关注沪深300ETF(510300)">
+        </div>
+      </div>
+      <div class="row" style="margin-top:12px">
+        <button class="btn" id="r-add">添加规则</button>
+        <button class="btn ghost" id="r-check">立即检查并推送</button>
+      </div>
+      <div class="note" id="r-result"></div>
+    </div>
+  </div>
+
+  <!-- ═══ 自选看板 ═══ -->
+  <div class="page" id="page-watch">
+    <div class="stat-grid" id="w-index"></div>
+    <div class="card">
+      <h3>自选标的实时行情 <span class="hint mono" id="w-time"></span></h3>
+      <div class="tbl-wrap"><table class="tbl">
+        <thead><tr><th>名称</th><th>代码</th><th class="num">现价</th><th class="num">涨跌幅</th><th class="num">成交额(亿)</th><th class="num">换手率</th></tr></thead>
+        <tbody id="w-tbody"></tbody>
+      </table></div>
+      <div style="text-align:right;margin-top:12px"><button class="btn ghost" id="w-refresh">刷新行情</button></div>
+    </div>
+  </div>
+
+</div>
+
+<script src="/static/echarts.min.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>
