@@ -181,7 +181,7 @@ function renderIndexKline(d) {
         return s;
       },
     },
-    legend: { data: ["MA5", "MA10", "MA20"], textStyle: { color: "#8ba0c9" }, top: 0 },
+    legend: { data: ["MA5", "MA10", "MA20", "MA60", "MA120"], textStyle: { color: "#8ba0c9" }, top: 0 },
     grid: [
       { left: 52, right: 20, top: 30, height: "58%" },
       { left: 52, right: 20, top: "74%", height: "16%" },
@@ -200,6 +200,8 @@ function renderIndexKline(d) {
       { name: "MA5", type: "line", data: d.ma5, smooth: true, showSymbol: false, lineStyle: { width: 1 }, itemStyle: { color: "#ffd166" } },
       { name: "MA10", type: "line", data: d.ma10, smooth: true, showSymbol: false, lineStyle: { width: 1 }, itemStyle: { color: "#00e5ff" } },
       { name: "MA20", type: "line", data: d.ma20, smooth: true, showSymbol: false, lineStyle: { width: 1 }, itemStyle: { color: "#7c5cff" } },
+      { name: "MA60", type: "line", data: d.ma60, smooth: true, showSymbol: false, lineStyle: { width: 1 }, itemStyle: { color: "#ff6b6b" } },
+      { name: "MA120", type: "line", data: d.ma120, smooth: true, showSymbol: false, lineStyle: { width: 1 }, itemStyle: { color: "#4ecdc4" } },
       { name: "成交量", type: "bar", xAxisIndex: 1, yAxisIndex: 1, data: d.volume, barMaxWidth: 12,
         itemStyle: { color: (p) => (d.kline[p.dataIndex][1] >= d.kline[p.dataIndex][0] ? "rgba(255,77,95,.55)" : "rgba(0,214,143,.55)") } },
     ],

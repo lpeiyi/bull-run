@@ -271,7 +271,7 @@ def api_index_kline():
     if cached and time.time() - cached["ts"] < 600:
         return jsonify(cached["data"])
     try:
-        df = kline(code, days=days + 35)  # 多取35根，保证均线开头有值
+        df = kline(code, days=days + 150)  # 多取150根，保证120日均线也能从头有值
     except Exception:
         df = None
     if df is None or df.empty:
@@ -279,6 +279,8 @@ def api_index_kline():
     ma5 = _fmt_series(df["close"].rolling(5).mean())
     ma10 = _fmt_series(df["close"].rolling(10).mean())
     ma20 = _fmt_series(df["close"].rolling(20).mean())
+    ma60 = _fmt_series(df["close"].rolling(60).mean())
+    ma120 = _fmt_series(df["close"].rolling(120).mean())
     df = df.tail(days)
     data = {
         "code": code,
@@ -290,6 +292,8 @@ def api_index_kline():
         "ma5": ma5[-days:],
         "ma10": ma10[-days:],
         "ma20": ma20[-days:],
+        "ma60": ma60[-days:],
+        "ma120": ma120[-days:],
     }
     _KLINE_CACHE[key] = {"ts": time.time(), "data": data}
     return jsonify(data)

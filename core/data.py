@@ -9,7 +9,8 @@ import urllib.request
 import requests
 import pandas as pd
 
-# 关键：删除沙箱代理环境变量，否则国内行情接口会被代理拦截
+# 关键：删除“沙箱”代理环境变量，让 requests/urllib 回落到系统注册表里的公司代理
+# （proxy.xn.petrochina:8080）。公司网络需走该代理才能访问外网，直连会被防火墙阻断。
 for _k in list(os.environ):
     if "proxy" in _k.lower():
         os.environ.pop(_k)
