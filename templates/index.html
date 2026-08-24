@@ -11,7 +11,7 @@
   <div class="brand"><img class="bull-logo" src="/static/logo_candidates/logo_realistic.jpg" alt="牛来"><span class="dot">牛来</span></div>
   <div class="tabs">
     <div class="tab on" data-page="overview">市场概览</div>
-    <div class="tab" data-page="backtest">指标回测</div>
+    <div class="tab" data-page="screener">智能选股</div>
     <div class="tab" data-page="sentiment">市场情绪</div>
     <div class="tab" data-page="rules">推送规则</div>
     <div class="tab" data-page="watch">自选看板</div>
@@ -114,37 +114,296 @@
     </div>
   </div>
 
-  <!-- ═══ 指标回测 ═══ -->
-  <div class="page" id="page-backtest">
-    <div class="card">
-      <h3>回测一只标的 <span class="hint">用技术指标的历史信号，验证它在过去的收益表现</span></h3>
-      <div class="row">
-        <div class="field"><label>标的代码</label>
-          <input id="bt-code" class="mono" placeholder="如 510300 / 600519 / 159915" value="510300">
+  <!-- ═══ 智能选股 ═══ -->
+  <div class="page" id="page-screener">
+    <div class="sc-layout">
+      <!-- 左侧：我的策略列表 -->
+      <aside class="sc-sidebar">
+        <div class="sc-sidebar-header">
+          <h2 class="sc-sidebar-title">我的策略</h2>
+          <div class="sc-sidebar-tools">
+            <input type="text" class="sc-search" id="sc-strategy-search" placeholder="搜索策略...">
+            <button class="btn primary sm" id="sc-new-strategy">+ 新建策略</button>
+          </div>
         </div>
-        <div class="field"><label>技术指标</label>
-          <select id="bt-indicator">
-            <option value="macd">MACD 金叉死叉</option>
-            <option value="kdj">KDJ 金叉死叉</option>
-            <option value="rsi">RSI 超买超卖</option>
-            <option value="boll">布林带 均值回归</option>
-            <option value="ma">均线 趋势跟踪</option>
-          </select>
+        <div class="sc-strategy-list" id="sc-strategy-list">
+          <div class="sc-empty-tip">暂无策略，点击上方新建</div>
         </div>
-        <div class="field" id="bt-params-box"></div>
-        <div class="field"><label>回测天数</label><input id="bt-days" class="mono" type="number" value="250" min="30" max="1000"></div>
-        <button class="btn" id="bt-run">开始回测</button>
-      </div>
-    </div>
+      </aside>
 
-    <div class="stat-grid" id="bt-stats" style="display:none"></div>
-    <div class="card" id="bt-chart-card" style="display:none">
-      <h3>资金曲线 <span class="hint">策略净值 vs 买入持有</span></h3>
-      <div id="chart"></div>
-    </div>
-    <div class="card" id="bt-trades-card" style="display:none">
-      <h3>交易明细</h3>
-      <div class="tbl-wrap"><table class="tbl" id="bt-trades"></table></div>
+      <!-- 右侧：主工作区 -->
+      <main class="sc-main">
+        <!-- Tab 栏 -->
+        <div class="sc-tabs">
+          <button class="sc-tab active" data-tab="formula">公式编辑</button>
+          <button class="sc-tab" data-tab="config">选股配置</button>
+          <button class="sc-tab" data-tab="backtest">回测</button>
+        </div>
+
+        <!-- Tab 内容：公式编辑 -->
+        <div class="sc-tab-pane active" data-pane="formula">
+          <div class="sc-formula-wrap">
+            <!-- 策略公式编辑器 -->
+            <div class="card sc-formula-card">
+              <div class="sc-card-header">
+                <div class="sc-card-title-row">
+                  <h3>策略公式</h3>
+                  <span class="sc-strategy-name" id="sc-strategy-name">--</span>
+                </div>
+                <div class="sc-card-actions">
+                  <button class="btn ghost sm" id="sc-edit-code" style="display:none">编辑代码</button>
+                  <button class="btn sm" id="sc-save-code" style="display:none">保存代码</button>
+                  <button class="btn ghost sm" id="sc-cancel-code" style="display:none">取消</button>
+                  <button class="btn ghost sm" id="sc-check-syntax" style="display:none">语法检查</button>
+                </div>
+              </div>
+              <div class="sc-code-meta" id="sc-code-meta">
+                <div class="sc-meta-item"><span class="sc-meta-label">策略名称</span><span class="sc-meta-val" id="sc-code-name">--</span></div>
+                <div class="sc-meta-item"><span class="sc-meta-label">描述</span><span class="sc-meta-val" id="sc-code-desc">--</span></div>
+              </div>
+              <div class="sc-code-name-edit" id="sc-code-name-edit" style="display:none">
+                <div class="sc-field-inline">
+                  <label>策略名称</label>
+                  <input id="sc-name" placeholder="给策略起个名字">
+                </div>
+                <div class="sc-field-inline">
+                  <label>描述</label>
+                  <input id="sc-desc" placeholder="一句话说明">
+                </div>
+              </div>
+              <textarea id="sc-code" class="tdx-code" readonly placeholder="在此粘贴或编写通达信公式..."></textarea>
+            </div>
+
+            <!-- 选股结果表格 -->
+            <div class="card sc-result-card">
+              <div class="sc-result-header">
+                <div class="sc-result-title">
+                  <h3>选股结果</h3>
+                  <span class="hint mono" id="sc-result-count">--</span>
+                </div>
+                <div class="sc-result-actions">
+                  <button class="btn ghost sm" id="sc-push-result" style="display:none">📤 推送飞书</button>
+                  <button class="btn primary" id="sc-run-screen">立即选股</button>
+                  <button class="btn ghost" id="sc-cancel-screen" style="display:none">取消选股</button>
+                </div>
+              </div>
+              <div class="sc-progress" id="sc-progress" style="display:none">
+                <div class="sc-progress-bar"><div class="sc-progress-fill" id="sc-progress-fill"></div></div>
+                <div class="sc-progress-text" id="sc-progress-text">准备中…</div>
+              </div>
+              <div class="tbl-wrap"><table class="tbl" id="sc-results">
+                <thead><tr>
+                  <th>代码</th><th>名称</th><th class="num">现价</th>
+                  <th class="num">涨跌幅</th><th class="num">市值(亿)</th>
+                  <th class="num">成交额(亿)</th><th>信号类型</th><th>入选时间</th><th>行业</th>
+                </tr></thead>
+                <tbody><tr><td colspan="9" style="text-align:center;color:#4d5d7d">点击"立即选股"开始选股</td></tr></tbody>
+              </table></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Tab 内容：选股配置 -->
+        <div class="sc-tab-pane" data-pane="config">
+          <div class="sc-config-wrap">
+            <!-- 选股范围 -->
+            <div class="card">
+              <h3>选股范围</h3>
+              <div class="sc-config-group">
+                <div class="sc-config-label">预设范围</div>
+                <select id="sc-scope-preset" class="sc-select">
+                  <option value="all">全市场</option>
+                  <option value="hs_a">沪深A股</option>
+                  <option value="hs300">沪深300成分股</option>
+                  <option value="zz500">中证500成分股</option>
+                  <option value="custom">自定义</option>
+                </select>
+              </div>
+              <div class="sc-scope-custom" id="sc-scope-custom" style="display:none">
+                <div class="sc-config-label">自定义板块</div>
+                <div class="sc-chk-grid">
+                  <label><input type="checkbox" value="sh_main"> 沪市主板</label>
+                  <label><input type="checkbox" value="sz_main"> 深市主板</label>
+                  <label><input type="checkbox" value="kcb"> 科创板</label>
+                  <label><input type="checkbox" value="cyb"> 创业板</label>
+                  <label><input type="checkbox" value="bj"> 北交所</label>
+                </div>
+              </div>
+            </div>
+
+            <!-- 排除条件 -->
+            <div class="card">
+              <h3>排除条件</h3>
+              <div class="sc-chk-grid">
+                <label><input type="checkbox" value="st" checked> ST/*ST</label>
+                <label><input type="checkbox" value="suspend" checked> 停牌/未交易</label>
+                <label><input type="checkbox" value="new"> 次新股</label>
+              </div>
+            </div>
+
+            <!-- 其他配置 -->
+            <div class="card">
+              <h3>其他设置</h3>
+              <div class="sc-config-grid">
+                <div class="sc-config-item">
+                  <div class="sc-config-label">复权方式</div>
+                  <select id="sc-adjust" class="sc-select">
+                    <option value="qfq">前复权</option>
+                    <option value="hfq">后复权</option>
+                    <option value="bfq">不复权</option>
+                  </select>
+                </div>
+                <div class="sc-config-item">
+                  <div class="sc-config-label">结果上限</div>
+                  <input id="sc-limit" class="mono sc-input" type="number" value="100">
+                </div>
+                <div class="sc-config-item">
+                  <div class="sc-config-label">排序方式</div>
+                  <select id="sc-sort" class="sc-select">
+                    <option value="mcap_yi">市值从大到小</option>
+                    <option value="change_pct">涨幅从高到低</option>
+                    <option value="amount_yi">成交额从大到小</option>
+                    <option value="turnover_pct">换手率从高到低</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+
+            <!-- 定时选股 -->
+            <div class="card">
+              <h3>定时选股</h3>
+              <div class="sc-timer-group">
+                <label class="sc-switch">
+                  <input type="checkbox" id="sc-timer-enabled">
+                  <span class="sc-switch-slider"></span>
+                  <span class="sc-switch-label">启用定时选股</span>
+                </label>
+                <div class="sc-timer-options" id="sc-timer-options" style="display:none">
+                  <div class="sc-timer-row">
+                    <div class="sc-config-item">
+                      <div class="sc-config-label">执行时间</div>
+                      <input id="sc-push-time" class="mono sc-input" type="time" value="15:05">
+                    </div>
+                    <div class="sc-config-item">
+                      <div class="sc-config-label">推送目标</div>
+                      <select id="sc-feishu-target" class="sc-select">
+                        <option value="feishu">飞书群</option>
+                      </select>
+                    </div>
+                  </div>
+                  <div class="sc-timer-hint" id="sc-push-hint"></div>
+                </div>
+              </div>
+            </div>
+
+            <!-- 保存按钮 -->
+            <div style="display:flex;justify-content:flex-end;gap:10px">
+              <button class="btn ghost" id="sc-reset-config">重置</button>
+              <button class="btn primary" id="sc-save-config-btn">保存配置</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Tab 内容：回测 -->
+        <div class="sc-tab-pane" data-pane="backtest">
+          <div class="sc-backtest-wrap">
+            <!-- 回测参数 -->
+            <div class="card">
+              <div class="sc-card-header">
+                <h3>回测参数</h3>
+                <button class="btn primary" id="sc-bt-run">开始回测</button>
+              </div>
+              <div class="sc-config-grid">
+                <div class="sc-config-item">
+                  <div class="sc-config-label">回测策略</div>
+                  <select id="sc-bt-indicator" class="sc-select">
+                    <optgroup label="我的策略" id="sc-bt-my-indicators">
+                      <option value="current">使用当前策略</option>
+                    </optgroup>
+                    <optgroup label="内置策略">
+                      <option value="macd">MACD 金叉死叉</option>
+                      <option value="kdj">KDJ 金叉死叉</option>
+                      <option value="ma5_10">MA5/MA10 金叉</option>
+                      <option value="ma20_60">MA20/MA60 金叉</option>
+                      <option value="rsi">RSI 超买超卖</option>
+                      <option value="boll">BOLL 突破</option>
+                    </optgroup>
+                  </select>
+                </div>
+                <div class="sc-config-item">
+                  <div class="sc-config-label">回测股票池</div>
+                  <select id="sc-bt-pool" class="sc-select">
+                    <option value="hs300">沪深300成分股</option>
+                    <option value="zz500">中证500成分股</option>
+                    <option value="all">全市场</option>
+                    <option value="hs_a">沪深A股</option>
+                    <option value="custom">自定义股票池</option>
+                  </select>
+                </div>
+                <div class="sc-config-item">
+                  <div class="sc-config-label">回测天数</div>
+                  <input id="sc-bt-days" class="mono sc-input" type="number" value="250" min="30" max="2000">
+                </div>
+                <div class="sc-config-item">
+                  <div class="sc-config-label">复权方式</div>
+                  <select id="sc-bt-adjust" class="sc-select">
+                    <option value="qfq">前复权</option>
+                    <option value="hfq">后复权</option>
+                    <option value="bfq">不复权</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+
+            <!-- 回测指标卡片 -->
+            <div class="sc-bt-stats" id="sc-bt-stats" style="display:none">
+              <div class="sc-stat-card">
+                <div class="sc-stat-label">累计收益率</div>
+                <div class="sc-stat-value" id="sc-bt-total-ret">--</div>
+              </div>
+              <div class="sc-stat-card">
+                <div class="sc-stat-label">年化收益率</div>
+                <div class="sc-stat-value" id="sc-bt-annual-ret">--</div>
+              </div>
+              <div class="sc-stat-card">
+                <div class="sc-stat-label">最大回撤</div>
+                <div class="sc-stat-value danger" id="sc-bt-max-dd">--</div>
+              </div>
+              <div class="sc-stat-card">
+                <div class="sc-stat-label">胜率</div>
+                <div class="sc-stat-value" id="sc-bt-win-rate">--</div>
+              </div>
+              <div class="sc-stat-card">
+                <div class="sc-stat-label">盈亏比</div>
+                <div class="sc-stat-value" id="sc-bt-profit-ratio">--</div>
+              </div>
+              <div class="sc-stat-card">
+                <div class="sc-stat-label">交易次数</div>
+                <div class="sc-stat-value" id="sc-bt-trade-count">--</div>
+              </div>
+            </div>
+
+            <!-- 收益曲线图 -->
+            <div class="card" id="sc-bt-chart-card" style="display:none">
+              <h3>收益曲线 <span class="hint">策略净值 vs 基准</span></h3>
+              <div id="sc-bt-chart" style="height:360px"></div>
+            </div>
+
+            <!-- 交易明细 -->
+            <div class="card" id="sc-bt-trades-card" style="display:none">
+              <h3>逐笔交易明细</h3>
+              <div class="tbl-wrap"><table class="tbl" id="sc-bt-trades"></table></div>
+            </div>
+
+            <!-- 空状态 -->
+            <div class="sc-bt-empty" id="sc-bt-empty">
+              <div class="sc-bt-empty-icon">📊</div>
+              <div class="sc-bt-empty-title">暂无回测数据</div>
+              <div class="sc-bt-empty-desc">选择策略和股票池后，点击"开始回测"查看表现</div>
+            </div>
+          </div>
+        </div>
+      </main>
     </div>
   </div>
 
@@ -213,6 +472,18 @@
       <div class="tbl-wrap"><table class="tbl">
         <thead><tr><th>名称</th><th>条件</th><th>阈值</th><th>冷却</th><th>提醒内容</th><th>启用</th><th></th></tr></thead>
         <tbody id="rules-tbody"></tbody>
+      </table></div>
+    </div>
+
+    <div class="card">
+      <h3>选股推送 <span class="hint">智能选股指标的定时推送，在「智能选股」页配置</span>
+        <button class="btn ghost sm" id="r-refresh-screen" style="float:right">刷新</button>
+      </h3>
+      <div class="tbl-wrap"><table class="tbl">
+        <thead><tr><th>指标名称</th><th>选股范围</th><th>推送时间</th><th>飞书推送</th><th>启用</th><th>操作</th></tr></thead>
+        <tbody id="screen-rules-tbody">
+          <tr><td colspan="6" style="text-align:center;color:#4d5d7d">加载中…</td></tr>
+        </tbody>
       </table></div>
     </div>
 

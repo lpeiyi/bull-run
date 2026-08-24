@@ -13,12 +13,14 @@ import pandas as pd
 
 from flask import Flask, render_template, request, jsonify
 
-from core import backtest, emotion_history, market, rules, sentiment
+from core import backtest, emotion_history, market, rules, sentiment, screener
 from core.data import real_quotes, kline, kline_range
 from core.notifier import send_feishu
+from core.tdx import check_tdx_syntax
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 CONFIG_FILE = os.path.join(BASE, "config.json")
+INDICATOR_FILE = os.path.join(BASE, "indicators.json")
 
 app = Flask(__name__)
 
@@ -312,6 +314,187 @@ def api_config():
     return jsonify({"ok": True})
 
 
+# ── 选股指标 CRUD ────────────────────────────────────
+
+_DEFAULT_INDICATORS = []
+
+
+def load_indicators():
+    if not os.path.exists(INDICATOR_FILE):
+        save_indicators(_DEFAULT_INDICATORS)
+        return list(_DEFAULT_INDICATORS)
+    try:
+        with open(INDICATOR_FILE, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return list(_DEFAULT_INDICATORS)
+
+
+def save_indicators(indicators):
+    with open(INDICATOR_FILE, "w", encoding="utf-8") as f:
+        json.dump(indicators, f, ensure_ascii=False, indent=2)
+
+
+@app.route("/api/indicators")
+def api_indicators_list():
+    return jsonify(load_indicators())
+
+
+@app.route("/api/indicators", methods=["POST"])
+def api_indicator_create():
+    body = request.get_json(force=True)
+    name = (body.get("name") or "").strip()
+    code = body.get("code") or ""
+    if not name:
+        return jsonify({"error": "指标名称不能为空"}), 400
+    if not code.strip():
+        return jsonify({"error": "指标代码不能为空"}), 400
+    ok, err = check_tdx_syntax(code)
+    if not ok:
+        return jsonify({"error": f"语法错误: {err}"}), 400
+    indicators = load_indicators()
+    import uuid
+    item = {
+        "id": uuid.uuid4().hex[:8],
+        "name": name,
+        "desc": body.get("desc", ""),
+        "builtin": False,
+        "enabled": bool(body.get("enabled", True)),
+        "code": code,
+        "config": body.get("config") or {
+            "scope": ["sh_main", "sz_main"],
+            "exclude": ["st"],
+            "adjust": "qfq",
+            "days": 250,
+            "limit": 100,
+            "sort_by": "change_pct",
+            "push_time": "15:05",
+            "feishu_push": False,
+        },
+    }
+    indicators.append(item)
+    save_indicators(indicators)
+    return jsonify(item)
+
+
+@app.route("/api/indicators/<iid>", methods=["PUT"])
+def api_indicator_update(iid):
+    body = request.get_json(force=True)
+    indicators = load_indicators()
+    for it in indicators:
+        if it["id"] == iid:
+            is_builtin = it.get("builtin", False)
+            # 内置指标：只允许改 config 和 enabled，不允许改 name/code/desc
+            if not is_builtin and "name" in body:
+                it["name"] = body["name"]
+            if not is_builtin and "desc" in body:
+                it["desc"] = body["desc"]
+            if "enabled" in body:
+                it["enabled"] = bool(body["enabled"])
+            if not is_builtin and "code" in body:
+                ok, err = check_tdx_syntax(body["code"])
+                if not ok:
+                    return jsonify({"error": f"语法错误: {err}"}), 400
+                it["code"] = body["code"]
+            if "config" in body:
+                # 合并配置，避免丢失字段
+                it["config"] = {**(it.get("config") or {}), **body["config"]}
+            save_indicators(indicators)
+            return jsonify(it)
+    return jsonify({"error": "指标不存在"}), 404
+
+
+@app.route("/api/indicators/<iid>", methods=["DELETE"])
+def api_indicator_delete(iid):
+    indicators = load_indicators()
+    indicators = [it for it in indicators if it["id"] != iid]
+    save_indicators(indicators)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/indicators/check_syntax", methods=["POST"])
+def api_check_syntax():
+    body = request.get_json(force=True)
+    code = body.get("code") or ""
+    ok, err = check_tdx_syntax(code)
+    return jsonify({"ok": ok, "error": err})
+
+
+# ── 选股执行 ────────────────────────────────────────
+
+@app.route("/api/screen/start", methods=["POST"])
+def api_screen_start():
+    body = request.get_json(force=True)
+    iid = body.get("indicator_id") or ""
+    # 也支持直接传代码
+    code = body.get("code")
+    config = body.get("config")
+    if not code:
+        indicators = load_indicators()
+        found = next((it for it in indicators if it["id"] == iid), None)
+        if not found:
+            return jsonify({"error": "指标不存在"}), 404
+        code = found["code"]
+        config = config or found.get("config")
+    task_id = screener.start_screen_async(code, config)
+    return jsonify({"task_id": task_id})
+
+
+@app.route("/api/screen/state/<task_id>")
+def api_screen_state(task_id):
+    st = screener.get_screen_state(task_id)
+    if not st:
+        return jsonify({"error": "任务不存在"}), 404
+    return jsonify(st)
+
+
+@app.route("/api/screen/cancel/<task_id>", methods=["POST"])
+def api_screen_cancel(task_id):
+    ok = screener.cancel_screen(task_id)
+    return jsonify({"ok": ok})
+
+
+@app.route("/api/screen/stock_list")
+def api_screen_stock_list():
+    force = request.args.get("force") == "1"
+    stocks = screener.load_stock_list(force=force)
+    return jsonify({"count": len(stocks), "stocks": stocks[:20]})
+
+
+# ── 选股页回测 ────────────────────────────────────────
+
+@app.route("/api/screen/backtest", methods=["POST"])
+def api_screen_backtest():
+    body = request.get_json(force=True)
+    iid = body.get("indicator_id") or ""
+    code = body.get("code")
+    stock_code = body.get("stock_code", "sh000001")
+    days = int(body.get("days", 250))
+    adjust = body.get("adjust", "qfq")
+    if not code:
+        indicators = load_indicators()
+        found = next((it for it in indicators if it["id"] == iid), None)
+        if not found:
+            return jsonify({"error": "指标不存在"}), 404
+        code = found["code"]
+    result = screener.backtest_indicator(code, stock_code, days=days, adjust=adjust)
+    return jsonify(result)
+
+
+@app.route("/api/screen/push", methods=["POST"])
+def api_screen_push():
+    """手动推送选股结果到飞书"""
+    body = request.get_json(force=True)
+    indicator_name = body.get("indicator_name", "智能选股")
+    results = body.get("results") or []
+    cfg = load_config()
+    webhook = cfg.get("feishu_webhook", "")
+    if not webhook:
+        return jsonify({"ok": False, "msg": "请先在「推送规则」页配置飞书 webhook"}), 400
+    ok, msg = screener.push_screen_results(indicator_name, results, webhook)
+    return jsonify({"ok": ok, "msg": msg})
+
+
 @app.route("/api/rules/check", methods=["POST"])
 def api_rules_check():
     """手动触发一次规则检查，触发项立即推送飞书"""
@@ -339,6 +522,66 @@ def background_monitor(interval=180):
         time.sleep(interval)
 
 
+# ── 后台：定时选股推送 ────────────────────────────────
+_screen_pushed = set()   # 记录今天已经推送过的指标 id，避免重复推送
+
+
+def background_screener():
+    """每分钟检查一次，到点执行已启用指标的选股并推送飞书"""
+    global _screen_pushed
+    last_date = None
+    while True:
+        try:
+            now = time.localtime()
+            today = time.strftime("%Y-%m-%d", now)
+            current_hm = time.strftime("%H:%M", now)
+
+            # 跨天重置
+            if today != last_date:
+                _screen_pushed.clear()
+                last_date = today
+
+            # 只在交易时段附近检查（9:00-16:00）
+            hour = now.tm_hour
+            if hour < 9 or hour > 16:
+                time.sleep(60)
+                continue
+
+            cfg = load_config()
+            webhook = cfg.get("feishu_webhook", "")
+            if not webhook:
+                time.sleep(60)
+                continue
+
+            indicators = load_indicators()
+            for ind in indicators:
+                if not ind.get("enabled"):
+                    continue
+                ind_cfg = ind.get("config") or {}
+                if not ind_cfg.get("feishu_push"):
+                    continue
+                push_time = ind_cfg.get("push_time", "15:05")
+                if push_time != current_hm:
+                    continue
+                if ind["id"] in _screen_pushed:
+                    continue
+
+                # 到点了，执行选股并推送
+                print(f"[定时选股] 执行指标: {ind['name']}")
+                try:
+                    results = screener.run_screen(ind["code"], ind_cfg)
+                    ok, msg = screener.push_screen_results(ind["name"], results, webhook)
+                    print(f"[定时选股] 推送结果: {ok}, {msg}, 命中{len(results)}只")
+                    _screen_pushed.add(ind["id"])
+                except Exception as e:
+                    print(f"[定时选股] 执行失败: {e}")
+
+        except Exception as e:
+            print(f"[定时选股] 异常: {e}")
+
+        time.sleep(60)
+
+
 if __name__ == "__main__":
     import webbrowser
 
@@ -355,6 +598,7 @@ if __name__ == "__main__":
 
     threading.Thread(target=_warmup_emotion, daemon=True).start()
     threading.Thread(target=background_monitor, daemon=True).start()
+    threading.Thread(target=background_screener, daemon=True).start()
     threading.Thread(target=_open_browser, daemon=True).start()
     print("=" * 52)
     print("牛来已启动")

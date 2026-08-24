@@ -1,0 +1,328 @@
+[
+  {
+    "id": "95baef9e",
+    "name": "日k勾到大负值",
+    "desc": "均线趋势向上 + KDJ 低位金叉预期 + 基本面过滤",
+    "builtin": false,
+    "enabled": true,
+    "code": "{ 1-知行多空线（黄线）逻辑 }\nM1:=14;\nM2:=28;\nM3:=57;\nM4:=114;\n知行短期趋势线:=EMA(EMA(C,10),10),COLORFFFFFF,LINETHICK1;\n知行多空线:=(MA(CLOSE,M1)+MA(CLOSE,M2)+MA(CLOSE,M3)+MA(CLOSE,M4))/4;\n白线达标:=知行短期趋势线>知行多空线;\n黄线达标:=CLOSE>知行多空线;\n趋势达标:=白线达标 AND 黄线达标;\n\n{ 2-核心选股条件：KDJ-J<1 + 市值>50亿 + 股价<100 + 排除创业板/科创板/ST/地产 }\nJ:=KDJ.J;  { 调取日线KDJ的J值 }\nJG:=C;     { 调取当前股价（收盘价） }\nSZ:=CAPITAL/100*C/10000;  { 计算市值（亿元），CAPITAL是流通股本(手)，转换为亿 }\n勾值:=J<13;\n市值:=SZ>50;\n股价:=JG<50;\n\n{ 3-板块筛选条件 }\n\nNOT_CYB:=IF(CODELIKE('300'),0,1);   {排除创业板（代码300开头）}\nNOT_KCB:=IF(CODELIKE('688'),0,1); {  排除科创板（代码688开头）}\n\nNOT_ST:=IF(NAMELIKE('ST') OR NAMELIKE('*ST'),0,1);  { 排除ST/*ST股 }\nNOT_DC:=IF(INBLOCK('房地产'),0,1); { 排除地产行业（通达信行业板块）}\n\n{4- 综合选股条件 }\n选股条件: 趋势达标 AND 勾值 AND NOT_ST=1 AND NOT_DC=1 AND 市值 {AND NOT_CYB=1 AND NOT_KCB=1 AND 股价};",
+    "config": {
+      "scope": [
+        "sh_main",
+        "sz_main"
+      ],
+      "exclude": [
+        "st",
+        "suspend",
+        "new"
+      ],
+      "adjust": "qfq",
+      "days": 250,
+      "limit": 100,
+      "sort_by": "mcap_yi",
+      "push_time": "15:05",
+      "feishu_push": true
+    }
+  },
+  {
+    "id": "f23225c4",
+    "name": "砖型图",
+    "desc": "捕捉短期趋势转强且价格动能出现“下跌衰竭后转涨”的个股",
+    "builtin": false,
+    "enabled": true,
+    "code": "{ 1-知行多空线（黄线）逻辑 }\nM1:=14;\nM2:=28;\nM3:=57;\nM4:=114;\n知行短期趋势线:=EMA(EMA(C,10),10),COLORFFFFFF,LINETHICK1;\n知行多空线:=(MA(CLOSE,M1)+MA(CLOSE,M2)+MA(CLOSE,M3)+MA(CLOSE,M4))/4;\n白线达标:=知行短期趋势线>知行多空线;\n黄线达标:=CLOSE>知行多空线;\n趋势达标:=白线达标 AND 黄线达标;\n\n{ 2-砖型图数据计算 }\nVAR1A:=(HHV(HIGH,4)-CLOSE)/(HHV(HIGH,4)-LLV(LOW,4))*100-90;\nVAR2A:=SMA(VAR1A,4,1)+100;\nVAR3A:=(CLOSE-LLV(LOW,4))/(HHV(HIGH,4)-LLV(LOW,4))*100;\nVAR4A:=SMA(VAR3A,6,1);\nVAR5A:=SMA(VAR4A,6,1)+100;\nVAR6A:=VAR5A-VAR2A;\n砖型图:=IF(VAR6A>4,VAR6A-4,0);\n\n{ 3-柱体颜色逻辑和高度逻辑 }\n今天红柱:=砖型图 > REF(砖型图,1);\n昨天绿柱:=REF(砖型图,1) < REF(砖型图,2);\n前天绿柱:=REF(砖型图,2) < REF(砖型图,3);\n大前天绿柱:=REF(砖型图,3) < REF(砖型图,4);\n大前前天绿柱:=REF(砖型图,4) < REF(砖型图,5);\n红柱高度:=砖型图 - REF(砖型图,1);\n绿柱高度:=REF(砖型图,2) - REF(砖型图,1);\n连续三绿:=昨天绿柱 AND 前天绿柱 AND 大前天绿柱;\n连续四绿:=昨天绿柱 AND 前天绿柱 AND 大前天绿柱 AND 大前前天绿柱;\n高度达标:=红柱高度 >= 绿柱高度 * 2 / 3;\n\n{ 4-市值剔除 }\nSZ:=CAPITAL/100*C/10000;\n市值剔除:=SZ>50;\n\n{ 5-板块剔除 }\n剔除创业板:=IF(CODELIKE('300') OR CODELIKE('301'),0,1);\n剔除科创:=IF(CODELIKE('688'),0,1);\n剔除ST:=NOT(NAMELIKE('ST')) AND NOT(NAMELIKE('*ST'));\n板块剔除:=剔除创业板 AND 剔除科创 AND 剔除ST;\n\n{ 6-最终选股条件 }\n综合选股: 趋势达标 AND 今天红柱 AND 昨天绿柱 AND 连续三绿 AND 高度达标 AND 市值剔除 AND 板块剔除;",
+    "config": {
+      "scope": [
+        "sh_main",
+        "sz_main"
+      ],
+      "exclude": [
+        "st",
+        "suspend",
+        "new"
+      ],
+      "adjust": "qfq",
+      "days": 250,
+      "limit": 100,
+      "sort_by": "mcap_yi",
+      "push_time": "15:05",
+      "feishu_push": true
+    }
+  },
+  {
+    "id": "bb546256",
+    "name": "日k勾到大负值",
+    "desc": "知行多空线趋势 + KDJ勾值 + 市值过滤 + ST/板块排除",
+    "builtin": false,
+    "enabled": true,
+    "code": "{ 1-知行多空线（黄线）逻辑 }\nM1:=14;\nM2:=28;\nM3:=57;\nM4:=114;\n知行短期趋势线:=EMA(EMA(C,10),10),COLORFFFFFF,LINETHICK1;\n知行多空线:=(MA(CLOSE,M1)+MA(CLOSE,M2)+MA(CLOSE,M3)+MA(CLOSE,M4))/4;\n白线达标:=知行短期趋势线>知行多空线;\n黄线达标:=CLOSE>知行多空线;\n趋势达标:=白线达标 AND 黄线达标;\n\n{ 2-核心选股条件：KDJ-J<1 + 市值>50亿 + 股价<100 + 排除创业板/科创板/ST/地产 }\nJ:=KDJ.J;  { 调取日线KDJ的J值 }\nJG:=C;     { 调取当前股价（收盘价） }\nSZ:=CAPITAL/100*C/10000;  { 计算市值（亿元），CAPITAL是流通股本(手)，转换为亿 }\n勾值:=J<13;\n市值:=SZ>50;\n股价:=JG<50;\n\n{ 3-板块筛选条件 }\n\nNOT_CYB:=IF(CODELIKE('300'),0,1);   {排除创业板（代码300开头）}\nNOT_KCB:=IF(CODELIKE('688'),0,1); {  排除科创板（代码688开头）}\n\nNOT_ST:=IF(NAMELIKE('ST') OR NAMELIKE('*ST'),0,1);  { 排除ST/*ST股 }\nNOT_DC:=IF(INBLOCK('房地产'),0,1); { 排除地产行业（通达信行业板块）}\n\n{4- 综合选股条件 }\n选股条件: 趋势达标 AND 勾值 AND NOT_ST=1 AND NOT_DC=1 AND 市值 {AND NOT_CYB=1 AND NOT_KCB=1 AND 股价};",
+    "config": {
+      "scope": [
+        "sh_main",
+        "sz_main"
+      ],
+      "exclude": [
+        "st"
+      ],
+      "adjust": "qfq",
+      "days": 250,
+      "limit": 100,
+      "sort_by": "change_pct",
+      "push_time": "15:05",
+      "feishu_push": false
+    }
+  },
+  {
+    "id": "e69993fa",
+    "name": "日k勾到大负值",
+    "desc": "知行多空线趋势 + KDJ勾值 + 市值过滤 + ST/板块排除",
+    "builtin": false,
+    "enabled": true,
+    "code": "{ 1-知行多空线（黄线）逻辑 }\nM1:=14;\nM2:=28;\nM3:=57;\nM4:=114;\n知行短期趋势线:=EMA(EMA(C,10),10),COLORFFFFFF,LINETHICK1;\n知行多空线:=(MA(CLOSE,M1)+MA(CLOSE,M2)+MA(CLOSE,M3)+MA(CLOSE,M4))/4;\n白线达标:=知行短期趋势线>知行多空线;\n黄线达标:=CLOSE>知行多空线;\n趋势达标:=白线达标 AND 黄线达标;\n\n{ 2-核心选股条件：KDJ-J<1 + 市值>50亿 + 股价<100 + 排除创业板/科创板/ST/地产 }\nJ:=KDJ.J;  { 调取日线KDJ的J值 }\nJG:=C;     { 调取当前股价（收盘价） }\nSZ:=CAPITAL/100*C/10000;  { 计算市值（亿元），CAPITAL是流通股本(手)，转换为亿 }\n勾值:=J<13;\n市值:=SZ>50;\n股价:=JG<50;\n\n{ 3-板块筛选条件 }\n\nNOT_CYB:=IF(CODELIKE('300'),0,1);   {排除创业板（代码300开头）}\nNOT_KCB:=IF(CODELIKE('688'),0,1); {  排除科创板（代码688开头）}\n\nNOT_ST:=IF(NAMELIKE('ST') OR NAMELIKE('*ST'),0,1);  { 排除ST/*ST股 }\nNOT_DC:=IF(INBLOCK('房地产'),0,1); { 排除地产行业（通达信行业板块）}\n\n{4- 综合选股条件 }\n选股条件: 趋势达标 AND 勾值 AND NOT_ST=1 AND NOT_DC=1 AND 市值 {AND NOT_CYB=1 AND NOT_KCB=1 AND 股价};",
+    "config": {
+      "scope": [
+        "sh_main",
+        "sz_main"
+      ],
+      "exclude": [
+        "st"
+      ],
+      "adjust": "qfq",
+      "days": 250,
+      "limit": 100,
+      "sort_by": "change_pct",
+      "push_time": "15:05",
+      "feishu_push": false
+    }
+  },
+  {
+    "id": "af50b6d1",
+    "name": "日k勾到大负值",
+    "desc": "知行多空线趋势 + KDJ勾值 + 市值过滤 + ST/板块排除",
+    "builtin": false,
+    "enabled": true,
+    "code": "{ 1-知行多空线（黄线）逻辑 }\nM1:=14;\nM2:=28;\nM3:=57;\nM4:=114;\n知行短期趋势线:=EMA(EMA(C,10),10),COLORFFFFFF,LINETHICK1;\n知行多空线:=(MA(CLOSE,M1)+MA(CLOSE,M2)+MA(CLOSE,M3)+MA(CLOSE,M4))/4;\n白线达标:=知行短期趋势线>知行多空线;\n黄线达标:=CLOSE>知行多空线;\n趋势达标:=白线达标 AND 黄线达标;\n\n{ 2-核心选股条件：KDJ-J<1 + 市值>50亿 + 股价<100 + 排除创业板/科创板/ST/地产 }\nJ:=KDJ.J;  { 调取日线KDJ的J值 }\nJG:=C;     { 调取当前股价（收盘价） }\nSZ:=CAPITAL/100*C/10000;  { 计算市值（亿元），CAPITAL是流通股本(手)，转换为亿 }\n勾值:=J<13;\n市值:=SZ>50;\n股价:=JG<50;\n\n{ 3-板块筛选条件 }\n\nNOT_CYB:=IF(CODELIKE('300'),0,1);   {排除创业板（代码300开头）}\nNOT_KCB:=IF(CODELIKE('688'),0,1); {  排除科创板（代码688开头）}\n\nNOT_ST:=IF(NAMELIKE('ST') OR NAMELIKE('*ST'),0,1);  { 排除ST/*ST股 }\nNOT_DC:=IF(INBLOCK('房地产'),0,1); { 排除地产行业（通达信行业板块）}\n\n{4- 综合选股条件 }\n选股条件: 趋势达标 AND 勾值 AND NOT_ST=1 AND NOT_DC=1 AND 市值 {AND NOT_CYB=1 AND NOT_KCB=1 AND 股价};",
+    "config": {
+      "scope": [
+        "sh_main",
+        "sz_main"
+      ],
+      "exclude": [
+        "st"
+      ],
+      "adjust": "qfq",
+      "days": 250,
+      "limit": 100,
+      "sort_by": "change_pct",
+      "push_time": "15:05",
+      "feishu_push": false
+    }
+  },
+  {
+    "id": "db83876a",
+    "name": "日k勾到大负值",
+    "desc": "知行多空线趋势 + KDJ勾值 + 市值过滤 + ST/板块排除",
+    "builtin": false,
+    "enabled": true,
+    "code": "{ 1-知行多空线（黄线）逻辑 }\nM1:=14;\nM2:=28;\nM3:=57;\nM4:=114;\n知行短期趋势线:=EMA(EMA(C,10),10),COLORFFFFFF,LINETHICK1;\n知行多空线:=(MA(CLOSE,M1)+MA(CLOSE,M2)+MA(CLOSE,M3)+MA(CLOSE,M4))/4;\n白线达标:=知行短期趋势线>知行多空线;\n黄线达标:=CLOSE>知行多空线;\n趋势达标:=白线达标 AND 黄线达标;\n\n{ 2-核心选股条件：KDJ-J<1 + 市值>50亿 + 股价<100 + 排除创业板/科创板/ST/地产 }\nJ:=KDJ.J;  { 调取日线KDJ的J值 }\nJG:=C;     { 调取当前股价（收盘价） }\nSZ:=CAPITAL/100*C/10000;  { 计算市值（亿元），CAPITAL是流通股本(手)，转换为亿 }\n勾值:=J<13;\n市值:=SZ>50;\n股价:=JG<50;\n\n{ 3-板块筛选条件 }\n\nNOT_CYB:=IF(CODELIKE('300'),0,1);   {排除创业板（代码300开头）}\nNOT_KCB:=IF(CODELIKE('688'),0,1); {  排除科创板（代码688开头）}\n\nNOT_ST:=IF(NAMELIKE('ST') OR NAMELIKE('*ST'),0,1);  { 排除ST/*ST股 }\nNOT_DC:=IF(INBLOCK('房地产'),0,1); { 排除地产行业（通达信行业板块）}\n\n{4- 综合选股条件 }\n选股条件: 趋势达标 AND 勾值 AND NOT_ST=1 AND NOT_DC=1 AND 市值 {AND NOT_CYB=1 AND NOT_KCB=1 AND 股价};",
+    "config": {
+      "scope": [
+        "sh_main",
+        "sz_main"
+      ],
+      "exclude": [
+        "st"
+      ],
+      "adjust": "qfq",
+      "days": 250,
+      "limit": 100,
+      "sort_by": "change_pct",
+      "push_time": "15:05",
+      "feishu_push": false
+    }
+  },
+  {
+    "id": "b79a9301",
+    "name": "日k勾到大负值",
+    "desc": "知行多空线趋势 + KDJ勾值 + 市值过滤 + ST/板块排除",
+    "builtin": false,
+    "enabled": true,
+    "code": "{ 1-知行多空线（黄线）逻辑 }\nM1:=14;\nM2:=28;\nM3:=57;\nM4:=114;\n知行短期趋势线:=EMA(EMA(C,10),10),COLORFFFFFF,LINETHICK1;\n知行多空线:=(MA(CLOSE,M1)+MA(CLOSE,M2)+MA(CLOSE,M3)+MA(CLOSE,M4))/4;\n白线达标:=知行短期趋势线>知行多空线;\n黄线达标:=CLOSE>知行多空线;\n趋势达标:=白线达标 AND 黄线达标;\n\n{ 2-核心选股条件：KDJ-J<1 + 市值>50亿 + 股价<100 + 排除创业板/科创板/ST/地产 }\nJ:=KDJ.J;  { 调取日线KDJ的J值 }\nJG:=C;     { 调取当前股价（收盘价） }\nSZ:=CAPITAL/100*C/10000;  { 计算市值（亿元），CAPITAL是流通股本(手)，转换为亿 }\n勾值:=J<13;\n市值:=SZ>50;\n股价:=JG<50;\n\n{ 3-板块筛选条件 }\n\nNOT_CYB:=IF(CODELIKE('300'),0,1);   {排除创业板（代码300开头）}\nNOT_KCB:=IF(CODELIKE('688'),0,1); {  排除科创板（代码688开头）}\n\nNOT_ST:=IF(NAMELIKE('ST') OR NAMELIKE('*ST'),0,1);  { 排除ST/*ST股 }\nNOT_DC:=IF(INBLOCK('房地产'),0,1); { 排除地产行业（通达信行业板块）}\n\n{4- 综合选股条件 }\n选股条件: 趋势达标 AND 勾值 AND NOT_ST=1 AND NOT_DC=1 AND 市值 {AND NOT_CYB=1 AND NOT_KCB=1 AND 股价};",
+    "config": {
+      "scope": [
+        "sh_main",
+        "sz_main"
+      ],
+      "exclude": [
+        "st"
+      ],
+      "adjust": "qfq",
+      "days": 250,
+      "limit": 100,
+      "sort_by": "change_pct",
+      "push_time": "15:05",
+      "feishu_push": false
+    }
+  },
+  {
+    "id": "7dc66734",
+    "name": "日k勾到大负值",
+    "desc": "知行多空线趋势 + KDJ勾值 + 市值过滤 + ST/板块排除",
+    "builtin": false,
+    "enabled": true,
+    "code": "{ 1-知行多空线（黄线）逻辑 }\nM1:=14;\nM2:=28;\nM3:=57;\nM4:=114;\n知行短期趋势线:=EMA(EMA(C,10),10),COLORFFFFFF,LINETHICK1;\n知行多空线:=(MA(CLOSE,M1)+MA(CLOSE,M2)+MA(CLOSE,M3)+MA(CLOSE,M4))/4;\n白线达标:=知行短期趋势线>知行多空线;\n黄线达标:=CLOSE>知行多空线;\n趋势达标:=白线达标 AND 黄线达标;\n\n{ 2-核心选股条件：KDJ-J<1 + 市值>50亿 + 股价<100 + 排除创业板/科创板/ST/地产 }\nJ:=KDJ.J;  { 调取日线KDJ的J值 }\nJG:=C;     { 调取当前股价（收盘价） }\nSZ:=CAPITAL/100*C/10000;  { 计算市值（亿元），CAPITAL是流通股本(手)，转换为亿 }\n勾值:=J<13;\n市值:=SZ>50;\n股价:=JG<50;\n\n{ 3-板块筛选条件 }\n\nNOT_CYB:=IF(CODELIKE('300'),0,1);   {排除创业板（代码300开头）}\nNOT_KCB:=IF(CODELIKE('688'),0,1); {  排除科创板（代码688开头）}\n\nNOT_ST:=IF(NAMELIKE('ST') OR NAMELIKE('*ST'),0,1);  { 排除ST/*ST股 }\nNOT_DC:=IF(INBLOCK('房地产'),0,1); { 排除地产行业（通达信行业板块）}\n\n{4- 综合选股条件 }\n选股条件: 趋势达标 AND 勾值 AND NOT_ST=1 AND NOT_DC=1 AND 市值 {AND NOT_CYB=1 AND NOT_KCB=1 AND 股价};",
+    "config": {
+      "scope": [
+        "sh_main",
+        "sz_main"
+      ],
+      "exclude": [
+        "st"
+      ],
+      "adjust": "qfq",
+      "days": 250,
+      "limit": 100,
+      "sort_by": "change_pct",
+      "push_time": "15:05",
+      "feishu_push": false
+    }
+  },
+  {
+    "id": "6bf72051",
+    "name": "日k勾到大负值",
+    "desc": "知行多空线趋势 + KDJ勾值 + 市值过滤 + ST/板块排除",
+    "builtin": false,
+    "enabled": true,
+    "code": "{ 1-知行多空线（黄线）逻辑 }\nM1:=14;\nM2:=28;\nM3:=57;\nM4:=114;\n知行短期趋势线:=EMA(EMA(C,10),10),COLORFFFFFF,LINETHICK1;\n知行多空线:=(MA(CLOSE,M1)+MA(CLOSE,M2)+MA(CLOSE,M3)+MA(CLOSE,M4))/4;\n白线达标:=知行短期趋势线>知行多空线;\n黄线达标:=CLOSE>知行多空线;\n趋势达标:=白线达标 AND 黄线达标;\n\n{ 2-核心选股条件：KDJ-J<1 + 市值>50亿 + 股价<100 + 排除创业板/科创板/ST/地产 }\nJ:=KDJ.J;  { 调取日线KDJ的J值 }\nJG:=C;     { 调取当前股价（收盘价） }\nSZ:=CAPITAL/100*C/10000;  { 计算市值（亿元），CAPITAL是流通股本(手)，转换为亿 }\n勾值:=J<13;\n市值:=SZ>50;\n股价:=JG<50;\n\n{ 3-板块筛选条件 }\n\nNOT_CYB:=IF(CODELIKE('300'),0,1);   {排除创业板（代码300开头）}\nNOT_KCB:=IF(CODELIKE('688'),0,1); {  排除科创板（代码688开头）}\n\nNOT_ST:=IF(NAMELIKE('ST') OR NAMELIKE('*ST'),0,1);  { 排除ST/*ST股 }\nNOT_DC:=IF(INBLOCK('房地产'),0,1); { 排除地产行业（通达信行业板块）}\n\n{4- 综合选股条件 }\n选股条件: 趋势达标 AND 勾值 AND NOT_ST=1 AND NOT_DC=1 AND 市值 {AND NOT_CYB=1 AND NOT_KCB=1 AND 股价};",
+    "config": {
+      "scope": [
+        "sh_main",
+        "sz_main"
+      ],
+      "exclude": [
+        "st"
+      ],
+      "adjust": "qfq",
+      "days": 250,
+      "limit": 100,
+      "sort_by": "change_pct",
+      "push_time": "15:05",
+      "feishu_push": false
+    }
+  },
+  {
+    "id": "558cd4d5",
+    "name": "日k勾到大负值",
+    "desc": "知行多空线趋势 + KDJ勾值 + 市值过滤 + ST/板块排除",
+    "builtin": false,
+    "enabled": true,
+    "code": "{ 1-知行多空线（黄线）逻辑 }\nM1:=14;\nM2:=28;\nM3:=57;\nM4:=114;\n知行短期趋势线:=EMA(EMA(C,10),10),COLORFFFFFF,LINETHICK1;\n知行多空线:=(MA(CLOSE,M1)+MA(CLOSE,M2)+MA(CLOSE,M3)+MA(CLOSE,M4))/4;\n白线达标:=知行短期趋势线>知行多空线;\n黄线达标:=CLOSE>知行多空线;\n趋势达标:=白线达标 AND 黄线达标;\n\n{ 2-核心选股条件：KDJ-J<1 + 市值>50亿 + 股价<100 + 排除创业板/科创板/ST/地产 }\nJ:=KDJ.J;  { 调取日线KDJ的J值 }\nJG:=C;     { 调取当前股价（收盘价） }\nSZ:=CAPITAL/100*C/10000;  { 计算市值（亿元），CAPITAL是流通股本(手)，转换为亿 }\n勾值:=J<13;\n市值:=SZ>50;\n股价:=JG<50;\n\n{ 3-板块筛选条件 }\n\nNOT_CYB:=IF(CODELIKE('300'),0,1);   {排除创业板（代码300开头）}\nNOT_KCB:=IF(CODELIKE('688'),0,1); {  排除科创板（代码688开头）}\n\nNOT_ST:=IF(NAMELIKE('ST') OR NAMELIKE('*ST'),0,1);  { 排除ST/*ST股 }\nNOT_DC:=IF(INBLOCK('房地产'),0,1); { 排除地产行业（通达信行业板块）}\n\n{4- 综合选股条件 }\n选股条件: 趋势达标 AND 勾值 AND NOT_ST=1 AND NOT_DC=1 AND 市值 {AND NOT_CYB=1 AND NOT_KCB=1 AND 股价};",
+    "config": {
+      "scope": [
+        "sh_main",
+        "sz_main"
+      ],
+      "exclude": [
+        "st"
+      ],
+      "adjust": "qfq",
+      "days": 250,
+      "limit": 100,
+      "sort_by": "change_pct",
+      "push_time": "15:05",
+      "feishu_push": false
+    }
+  },
+  {
+    "id": "8ec5e9af",
+    "name": "日k勾到大负值",
+    "desc": "知行多空线趋势 + KDJ勾值 + 市值过滤 + ST/板块排除",
+    "builtin": false,
+    "enabled": true,
+    "code": "{ 1-知行多空线（黄线）逻辑 }\nM1:=14;\nM2:=28;\nM3:=57;\nM4:=114;\n知行短期趋势线:=EMA(EMA(C,10),10),COLORFFFFFF,LINETHICK1;\n知行多空线:=(MA(CLOSE,M1)+MA(CLOSE,M2)+MA(CLOSE,M3)+MA(CLOSE,M4))/4;\n白线达标:=知行短期趋势线>知行多空线;\n黄线达标:=CLOSE>知行多空线;\n趋势达标:=白线达标 AND 黄线达标;\n\n{ 2-核心选股条件：KDJ-J<1 + 市值>50亿 + 股价<100 + 排除创业板/科创板/ST/地产 }\nJ:=KDJ.J;  { 调取日线KDJ的J值 }\nJG:=C;     { 调取当前股价（收盘价） }\nSZ:=CAPITAL/100*C/10000;  { 计算市值（亿元），CAPITAL是流通股本(手)，转换为亿 }\n勾值:=J<13;\n市值:=SZ>50;\n股价:=JG<50;\n\n{ 3-板块筛选条件 }\n\nNOT_CYB:=IF(CODELIKE('300'),0,1);   {排除创业板（代码300开头）}\nNOT_KCB:=IF(CODELIKE('688'),0,1); {  排除科创板（代码688开头）}\n\nNOT_ST:=IF(NAMELIKE('ST') OR NAMELIKE('*ST'),0,1);  { 排除ST/*ST股 }\nNOT_DC:=IF(INBLOCK('房地产'),0,1); { 排除地产行业（通达信行业板块）}\n\n{4- 综合选股条件 }\n选股条件: 趋势达标 AND 勾值 AND NOT_ST=1 AND NOT_DC=1 AND 市值 {AND NOT_CYB=1 AND NOT_KCB=1 AND 股价};",
+    "config": {
+      "scope": [
+        "sh_main",
+        "sz_main"
+      ],
+      "exclude": [
+        "st"
+      ],
+      "adjust": "qfq",
+      "days": 250,
+      "limit": 100,
+      "sort_by": "change_pct",
+      "push_time": "15:05",
+      "feishu_push": false
+    }
+  },
+  {
+    "id": "6db7776c",
+    "name": "日k勾到大负值",
+    "desc": "知行多空线趋势 + KDJ勾值 + 市值过滤 + ST/板块排除",
+    "builtin": false,
+    "enabled": true,
+    "code": "{ 1-知行多空线（黄线）逻辑 }\nM1:=14;\nM2:=28;\nM3:=57;\nM4:=114;\n知行短期趋势线:=EMA(EMA(C,10),10),COLORFFFFFF,LINETHICK1;\n知行多空线:=(MA(CLOSE,M1)+MA(CLOSE,M2)+MA(CLOSE,M3)+MA(CLOSE,M4))/4;\n白线达标:=知行短期趋势线>知行多空线;\n黄线达标:=CLOSE>知行多空线;\n趋势达标:=白线达标 AND 黄线达标;\n\n{ 2-核心选股条件：KDJ-J<1 + 市值>50亿 + 股价<100 + 排除创业板/科创板/ST/地产 }\nJ:=KDJ.J;  { 调取日线KDJ的J值 }\nJG:=C;     { 调取当前股价（收盘价） }\nSZ:=CAPITAL/100*C/10000;  { 计算市值（亿元），CAPITAL是流通股本(手)，转换为亿 }\n勾值:=J<13;\n市值:=SZ>50;\n股价:=JG<50;\n\n{ 3-板块筛选条件 }\n\nNOT_CYB:=IF(CODELIKE('300'),0,1);   {排除创业板（代码300开头）}\nNOT_KCB:=IF(CODELIKE('688'),0,1); {  排除科创板（代码688开头）}\n\nNOT_ST:=IF(NAMELIKE('ST') OR NAMELIKE('*ST'),0,1);  { 排除ST/*ST股 }\nNOT_DC:=IF(INBLOCK('房地产'),0,1); { 排除地产行业（通达信行业板块）}\n\n{4- 综合选股条件 }\n选股条件: 趋势达标 AND 勾值 AND NOT_ST=1 AND NOT_DC=1 AND 市值 {AND NOT_CYB=1 AND NOT_KCB=1 AND 股价};",
+    "config": {
+      "scope": [
+        "sh_main",
+        "sz_main"
+      ],
+      "exclude": [
+        "st"
+      ],
+      "adjust": "qfq",
+      "days": 250,
+      "limit": 100,
+      "sort_by": "change_pct",
+      "push_time": "15:05",
+      "feishu_push": false
+    }
+  },
+  {
+    "id": "8a3499c8",
+    "name": "日k勾到大负值",
+    "desc": "知行多空线趋势 + KDJ勾值 + 市值过滤 + ST/板块排除",
+    "builtin": false,
+    "enabled": true,
+    "code": "{ 1-知行多空线（黄线）逻辑 }\nM1:=14;\nM2:=28;\nM3:=57;\nM4:=114;\n知行短期趋势线:=EMA(EMA(C,10),10),COLORFFFFFF,LINETHICK1;\n知行多空线:=(MA(CLOSE,M1)+MA(CLOSE,M2)+MA(CLOSE,M3)+MA(CLOSE,M4))/4;\n白线达标:=知行短期趋势线>知行多空线;\n黄线达标:=CLOSE>知行多空线;\n趋势达标:=白线达标 AND 黄线达标;\n\n{ 2-核心选股条件：KDJ-J<1 + 市值>50亿 + 股价<100 + 排除创业板/科创板/ST/地产 }\nJ:=KDJ.J;  { 调取日线KDJ的J值 }\nJG:=C;     { 调取当前股价（收盘价） }\nSZ:=CAPITAL/100*C/10000;  { 计算市值（亿元），CAPITAL是流通股本(手)，转换为亿 }\n勾值:=J<13;\n市值:=SZ>50;\n股价:=JG<50;\n\n{ 3-板块筛选条件 }\n\nNOT_CYB:=IF(CODELIKE('300'),0,1);   {排除创业板（代码300开头）}\nNOT_KCB:=IF(CODELIKE('688'),0,1); {  排除科创板（代码688开头）}\n\nNOT_ST:=IF(NAMELIKE('ST') OR NAMELIKE('*ST'),0,1);  { 排除ST/*ST股 }\nNOT_DC:=IF(INBLOCK('房地产'),0,1); { 排除地产行业（通达信行业板块）}\n\n{4- 综合选股条件 }\n选股条件: 趋势达标 AND 勾值 AND NOT_ST=1 AND NOT_DC=1 AND 市值 {AND NOT_CYB=1 AND NOT_KCB=1 AND 股价};",
+    "config": {
+      "scope": [
+        "sh_main",
+        "sz_main"
+      ],
+      "exclude": [
+        "st"
+      ],
+      "adjust": "qfq",
+      "days": 250,
+      "limit": 100,
+      "sort_by": "change_pct",
+      "push_time": "15:05",
+      "feishu_push": false
+    }
+  },
+  {
+    "id": "6fef86e8",
+    "name": "日k勾到大负值",
+    "desc": "知行多空线趋势 + KDJ勾值 + 市值过滤 + ST/板块排除",
+    "builtin": false,
+    "enabled": true,
+    "code": "{ 1-知行多空线（黄线）逻辑 }\nM1:=14;\nM2:=28;\nM3:=57;\nM4:=114;\n知行短期趋势线:=EMA(EMA(C,10),10),COLORFFFFFF,LINETHICK1;\n知行多空线:=(MA(CLOSE,M1)+MA(CLOSE,M2)+MA(CLOSE,M3)+MA(CLOSE,M4))/4;\n白线达标:=知行短期趋势线>知行多空线;\n黄线达标:=CLOSE>知行多空线;\n趋势达标:=白线达标 AND 黄线达标;\n\n{ 2-核心选股条件：KDJ-J<1 + 市值>50亿 + 股价<100 + 排除创业板/科创板/ST/地产 }\nJ:=KDJ.J;  { 调取日线KDJ的J值 }\nJG:=C;     { 调取当前股价（收盘价） }\nSZ:=CAPITAL/100*C/10000;  { 计算市值（亿元），CAPITAL是流通股本(手)，转换为亿 }\n勾值:=J<13;\n市值:=SZ>50;\n股价:=JG<50;\n\n{ 3-板块筛选条件 }\n\nNOT_CYB:=IF(CODELIKE('300'),0,1);   {排除创业板（代码300开头）}\nNOT_KCB:=IF(CODELIKE('688'),0,1); {  排除科创板（代码688开头）}\n\nNOT_ST:=IF(NAMELIKE('ST') OR NAMELIKE('*ST'),0,1);  { 排除ST/*ST股 }\nNOT_DC:=IF(INBLOCK('房地产'),0,1); { 排除地产行业（通达信行业板块）}\n\n{4- 综合选股条件 }\n选股条件: 趋势达标 AND 勾值 AND NOT_ST=1 AND NOT_DC=1 AND 市值 {AND NOT_CYB=1 AND NOT_KCB=1 AND 股价};",
+    "config": {
+      "scope": [
+        "sh_main",
+        "sz_main"
+      ],
+      "exclude": [
+        "st"
+      ],
+      "adjust": "qfq",
+      "days": 250,
+      "limit": 100,
+      "sort_by": "change_pct",
+      "push_time": "15:05",
+      "feishu_push": false
+    }
+  }
+]

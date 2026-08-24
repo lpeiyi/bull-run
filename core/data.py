@@ -2,9 +2,11 @@
 """
 数据层：A股 / 基金ETF 的实时行情 + 历史K线（全免费、低延迟）
 实时行情：腾讯 qt.gtimg.cn（秒级，A股/ETF 通用）
-历史K线：腾讯 ifzq.gtimg.cn（日K，支持前复权 qfq / 后复权 hfq / 不复权）
+历史K线：新浪 money.finance.sina.com.cn（日K，前复权，沪深京通用）
 """
 import os
+import time
+import random
 import urllib.request
 import requests
 import pandas as pd
@@ -19,7 +21,7 @@ UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
       "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36")
 
 _SESSION = requests.Session()
-_SESSION.headers.update({"User-Agent": UA})
+_SESSION.headers.update({"User-Agent": UA, "Referer": "https://finance.sina.com.cn"})
 
 
 def to_symbol(code):
@@ -78,27 +80,27 @@ def real_quotes(codes):
     return out
 
 
-_KLINE = "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
+# 新浪K线接口（前复权，稳定可靠，沪深京通用）
+_SINA_KLINE = "https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_MarketData.getKLineData"
+_SINA_KLINE_MAX = 1000  # 新浪单次最多约1000条
 
 
-def _parse_kline(d, sym, adjust):
-    """解析腾讯日K返回体为 DataFrame（腾讯字段顺序: [日期,开,收,高,低,成交量]）"""
-    node = (d.get("data") or {}).get(sym) or {}
-    rows = node.get(f"{adjust}day") or node.get("day") or []
-    if not rows:
+def _parse_sina_kline(data_list):
+    """解析新浪日K返回为 DataFrame（字段：day, open, high, low, close, volume）"""
+    if not data_list:
         return pd.DataFrame(columns=["date", "open", "high", "low", "close", "volume"])
     recs = []
-    for it in rows:
+    for it in data_list:
         try:
             recs.append({
-                "date": it[0],
-                "open": float(it[1]),
-                "close": float(it[2]),
-                "high": float(it[3]),
-                "low": float(it[4]),
-                "volume": float(it[5]) if len(it) > 5 else 0.0,
+                "date": it["day"],
+                "open": float(it["open"]),
+                "high": float(it["high"]),
+                "low": float(it["low"]),
+                "close": float(it["close"]),
+                "volume": float(it.get("volume", 0)),
             })
-        except (ValueError, TypeError, IndexError):
+        except (ValueError, TypeError, KeyError):
             continue
     df = pd.DataFrame(recs)
     df["date"] = pd.to_datetime(df["date"])
@@ -106,16 +108,65 @@ def _parse_kline(d, sym, adjust):
 
 
 def kline(code, days=250, adjust="qfq"):
-    """历史日K线，返回 DataFrame(date, open, high, low, close, volume)"""
+    """
+    历史日K线，返回 DataFrame(date, open, high, low, close, volume)
+    数据源：新浪财经（前复权）
+    adjust 参数目前统一使用前复权（新浪默认）
+    带重试和随机延迟，避免触发反爬
+    """
     sym = to_symbol(code)
-    url = f"{_KLINE}?param={sym},day,,,{days},{adjust}"
-    r = _SESSION.get(url, timeout=12)
-    return _parse_kline(r.json(), sym, adjust)
+    # 新浪接口单次最多约1000条，多取一些留余量
+    fetch_days = min(max(days + 30, 300), _SINA_KLINE_MAX)
+    params = {
+        "symbol": sym,
+        "scale": "240",   # 240分钟 = 日线
+        "ma": "no",
+        "datalen": str(fetch_days),
+    }
+    # 带重试：最多 3 次，被封时等待较长时间再试
+    max_retry = 3
+    for attempt in range(max_retry):
+        try:
+            # 随机延迟 0.1~0.3 秒，降低请求频率避免被封
+            time.sleep(random.uniform(0.1, 0.3))
+            r = _SESSION.get(_SINA_KLINE, params=params, timeout=15)
+            if r.status_code == 456 or r.status_code == 501:
+                # 被反爬拦截，等待更长时间再试
+                wait = 10 + attempt * 20
+                time.sleep(wait)
+                continue
+            data = r.json()
+            df = _parse_sina_kline(data)
+            # 只返回需要的天数
+            if len(df) > days:
+                df = df.tail(days).reset_index(drop=True)
+            return df
+        except (requests.RequestException, ValueError):
+            if attempt < max_retry - 1:
+                time.sleep(2 + attempt * 3)
+            else:
+                raise
+    # 所有重试都失败，返回空 DataFrame
+    return pd.DataFrame(columns=["date", "open", "high", "low", "close", "volume"])
 
 
 def kline_range(code, start="2020-01-01", end="2099-01-01", adjust="qfq"):
-    """按日期范围拉日K（绕过单次约1000根上限），用于全量历史"""
+    """
+    按日期范围拉日K，用于全量历史
+    由于新浪接口按条数返回，这里用最大条数获取后再按日期过滤
+    """
     sym = to_symbol(code)
-    url = f"{_KLINE}?param={sym},day,{start},{end},2000,{adjust}"
-    r = _SESSION.get(url, timeout=12)
-    return _parse_kline(r.json(), sym, adjust)
+    params = {
+        "symbol": sym,
+        "scale": "240",
+        "ma": "no",
+        "datalen": str(_SINA_KLINE_MAX),
+    }
+    r = _SESSION.get(_SINA_KLINE, params=params, timeout=15)
+    data = r.json()
+    df = _parse_sina_kline(data)
+    # 按日期范围过滤
+    if len(df) > 0:
+        mask = (df["date"] >= pd.to_datetime(start)) & (df["date"] <= pd.to_datetime(end))
+        df = df[mask].reset_index(drop=True)
+    return df

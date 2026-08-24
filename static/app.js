@@ -19,6 +19,8 @@ document.querySelectorAll(".tab").forEach((t) => {
     if (t.dataset.page === "overview") loadOverview();
     if (t.dataset.page === "watch") loadWatch();
     if (t.dataset.page === "sentiment") { loadSentiment(); loadLowNext(); }
+    if (t.dataset.page === "screener") loadScreener();
+    if (t.dataset.page === "rules") loadScreenRules();
   });
 });
 
@@ -350,95 +352,6 @@ $("#ln-toggle").addEventListener("click", () => {
   renderLiangneng();
 });
 
-// ═══ 指标回测 ══════════════════════════
-const INDICATOR_PARAMS = {
-  macd: [{ k: "fast", l: "快线", v: 12 }, { k: "slow", l: "慢线", v: 26 }, { k: "signal", l: "信号", v: 9 }],
-  kdj: [{ k: "n", l: "N", v: 9 }, { k: "m1", l: "M1", v: 3 }, { k: "m2", l: "M2", v: 3 }],
-  rsi: [{ k: "n", l: "周期", v: 14 }, { k: "oversold", l: "超卖", v: 30 }, { k: "overbought", l: "超买", v: 70 }],
-  boll: [{ k: "n", l: "周期", v: 20 }, { k: "k", l: "倍数", v: 2 }],
-  ma: [{ k: "n", l: "周期", v: 20 }],
-};
-
-function renderParams() {
-  const ind = $("#bt-indicator").value;
-  const box = $("#bt-params-box");
-  box.innerHTML = "";
-  INDICATOR_PARAMS[ind].forEach((p) => {
-    const f = document.createElement("div");
-    f.className = "field";
-    f.innerHTML = `<label>${p.l}</label><input class="mono bt-param" data-k="${p.k}" type="number" value="${p.v}" style="min-width:70px">`;
-    box.appendChild(f);
-  });
-}
-$("#bt-indicator").addEventListener("change", renderParams);
-renderParams();
-
-let btChart = null;
-$("#bt-run").addEventListener("click", async () => {
-  const params = {};
-  document.querySelectorAll(".bt-param").forEach((i) => (params[i.dataset.k] = Number(i.value)));
-  const body = {
-    code: $("#bt-code").value.trim(),
-    indicator: $("#bt-indicator").value,
-    params,
-    days: Number($("#bt-days").value),
-  };
-  $("#bt-run").textContent = "回测中…";
-  try {
-    const r = await fetch("/api/backtest", {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
-    }).then((x) => x.json());
-    if (r.error) { alert(r.error); return; }
-    renderBacktest(r);
-  } catch (e) {
-    alert("回测失败: " + e);
-  } finally {
-    $("#bt-run").textContent = "开始回测";
-  }
-});
-
-function renderBacktest(r) {
-  const stats = [
-    ["总收益", r.total_ret + "%", colorClass(r.total_ret)],
-    ["年化收益", r.annual_ret + "%", colorClass(r.annual_ret)],
-    ["最大回撤", r.max_drawdown + "%", "down"],
-    ["胜率", r.win_rate + "%", r.win_rate >= 50 ? "up" : "flat"],
-    ["交易次数", r.trade_count, "flat"],
-    ["买入持有", r.benchmark_ret + "%", colorClass(r.benchmark_ret)],
-  ];
-  $("#bt-stats").innerHTML = stats.map(([l, n, c]) =>
-    `<div class="stat"><div class="num ${c}">${n}</div><div class="lbl">${l}</div></div>`).join("");
-  $("#bt-stats").style.display = "grid";
-  $("#bt-chart-card").style.display = "block";
-  $("#bt-trades-card").style.display = "block";
-
-  // 资金曲线
-  if (!btChart) btChart = echarts.init($("#chart"));
-  btChart.setOption({
-    backgroundColor: "transparent",
-    tooltip: { trigger: "axis" },
-    legend: { data: ["策略净值", "买入持有"], textStyle: { color: "#8392ad" }, top: 0 },
-    grid: { left: 60, right: 20, top: 40, bottom: 40 },
-    xAxis: { type: "category", data: r.dates, axisLine: { lineStyle: { color: "#1c2942" } }, axisLabel: { color: "#4d5d7d" } },
-    yAxis: { type: "value", scale: true, splitLine: { lineStyle: { color: "#1c2942" } }, axisLabel: { color: "#4d5d7d" } },
-    series: [
-      { name: "策略净值", type: "line", data: r.equity, smooth: true, showSymbol: false, lineStyle: { color: "#00e5ff", width: 2 }, areaStyle: { color: "rgba(0,229,255,.08)" } },
-      { name: "买入持有", type: "line", data: r.benchmark, smooth: true, showSymbol: false, lineStyle: { color: "#7c5cff", width: 1.5, type: "dashed" } },
-    ],
-  });
-
-  // 交易明细
-  const rows = r.trades.length
-    ? r.trades.map((t) => `<tr>
-        <td class="mono">${t.buy_date}</td><td class="mono">${t.sell_date}</td>
-        <td class="num mono">${fmt(t.buy_price, 4)}</td><td class="num mono">${fmt(t.sell_price, 4)}</td>
-        <td class="num mono ${colorClass(t.ret)}">${(t.ret * 100).toFixed(2)}%</td>
-        <td class="num mono">${t.days}</td></tr>`).join("")
-    : `<tr><td colspan="6" style="text-align:center;color:#4d5d7d">该区间内无交易信号</td></tr>`;
-  $("#bt-trades").innerHTML =
-    `<thead><tr><th>买入日</th><th>卖出日</th><th class="num">买入价</th><th class="num">卖出价</th><th class="num">单次收益</th><th class="num">持天数</th></tr></thead><tbody>${rows}</tbody>`;
-}
-
 // ═══ 市场情绪 ══════════════════════════
 let emotionChart = null;
 let curDays = 15;
@@ -697,6 +610,87 @@ $("#r-check").addEventListener("click", async () => {
       : `未触发任何规则`);
 });
 
+// ── 选股推送列表 ────────────────────────────────
+const SCOPE_LABELS = {
+  sh_main: "沪主", sz_main: "深主", kcb: "科创", cyb: "创业", bj: "北交"
+};
+
+async function loadScreenRules() {
+  try {
+    const indicators = await fetch("/api/indicators").then((r) => r.json());
+    // 只显示开启了飞书推送的
+    const pushList = indicators.filter((ind) => ind.config?.feishu_push);
+    renderScreenRules(pushList, indicators.length);
+  } catch (e) {
+    console.error("加载选股推送失败:", e);
+  }
+}
+
+function renderScreenRules(list, total) {
+  const tb = $("#screen-rules-tbody");
+  if (!list.length) {
+    tb.innerHTML = `<tr><td colspan="6" style="text-align:center;color:#4d5d7d">暂无选股推送，去「智能选股」页开启</td></tr>`;
+    return;
+  }
+  tb.innerHTML = list.map((ind) => {
+    const cfg = ind.config || {};
+    const scope = (cfg.scope || []).map((s) => SCOPE_LABELS[s] || s).join("、") || "--";
+    return `<tr>
+      <td>${escapeHtml(ind.name)}</td>
+      <td style="font-size:12px">${scope}</td>
+      <td class="mono">${cfg.push_time || "--"}</td>
+      <td><span style="color:var(--green)">✓ 已开启</span></td>
+      <td><label class="custom-w">
+        <input type="checkbox" ${ind.enabled ? "checked" : ""} data-id="${ind.id}" class="sr-toggle">
+        <span class="sl"></span>
+      </label></td>
+      <td><button class="btn ghost sm sr-del" data-id="${ind.id}" style="color:var(--red)">关闭推送</button></td>
+    </tr>`;
+  }).join("");
+
+  // 绑定启用/停用事件
+  tb.querySelectorAll(".sr-toggle").forEach((c) => {
+    c.addEventListener("change", async (e) => {
+      const id = e.target.dataset.id;
+      const enabled = e.target.checked;
+      try {
+        await fetch(`/api/indicators/${id}`, {
+          method: "PUT", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ enabled }),
+        }).then((x) => x.json());
+        loadScreenRules();
+      } catch (e2) {
+        alert("操作失败");
+        loadScreenRules();
+      }
+    });
+  });
+
+  // 绑定关闭推送事件
+  tb.querySelectorAll(".sr-del").forEach((b) => {
+    b.addEventListener("click", async (e) => {
+      const id = e.target.dataset.id;
+      if (!confirm("确定关闭这个选股推送吗？可在智能选股页重新开启。")) return;
+      try {
+        // 先获取当前指标的配置
+        const indicators = await fetch("/api/indicators").then((r) => r.json());
+        const ind = indicators.find((x) => x.id === id);
+        if (!ind) return;
+        const cfg = { ...(ind.config || {}), feishu_push: false };
+        await fetch(`/api/indicators/${id}`, {
+          method: "PUT", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ config: cfg }),
+        }).then((x) => x.json());
+        loadScreenRules();
+      } catch (e2) {
+        alert("操作失败");
+      }
+    });
+  });
+}
+
+$("#r-refresh-screen").addEventListener("click", loadScreenRules);
+
 // ═══ 自选看板 ══════════════════════════
 async function loadWatch() {
   await loadConfig();
@@ -730,6 +724,580 @@ function renderWatch(q) {
   }).join("");
 }
 $("#w-refresh").addEventListener("click", loadWatch);
+
+// ═══ 选股页状态 ═══
+let SC_STRATEGIES = [];       // 所有策略
+let SC_CURRENT_STRATEGY = null;  // 当前选中策略 id
+let SC_CODE_EDIT = false;     // 代码编辑模式
+let SC_TASK_ID = null;
+let SC_POLL_TIMER = null;
+let SC_LAST_RESULTS = [];
+let scBtChart = null;
+
+async function loadScreener() {
+  if (SC_STRATEGIES.length === 0) {
+    await loadStrategies();
+  }
+}
+
+// ── Tab 切换 ──
+document.querySelectorAll(".sc-tab").forEach((tab) => {
+  tab.addEventListener("click", () => {
+    const target = tab.dataset.tab;
+    document.querySelectorAll(".sc-tab").forEach((t) => t.classList.toggle("active", t === tab));
+    document.querySelectorAll(".sc-tab-pane").forEach((p) => {
+      p.classList.toggle("active", p.dataset.pane === target);
+    });
+    if (target === "backtest" && scBtChart) {
+      setTimeout(() => scBtChart.resize(), 100);
+    }
+  });
+});
+
+// ── 策略列表 ──
+async function loadStrategies() {
+  try {
+    SC_STRATEGIES = await fetch("/api/indicators").then((r) => r.json());
+  } catch (e) {
+    SC_STRATEGIES = [];
+  }
+  renderStrategyList();
+  renderBtStrategyOptions();
+  if (SC_STRATEGIES.length > 0 && !SC_CURRENT_STRATEGY) {
+    selectStrategy(SC_STRATEGIES[0].id);
+  } else if (SC_STRATEGIES.length === 0) {
+    SC_CURRENT_STRATEGY = null;
+    clearStrategyView();
+  }
+}
+
+function renderStrategyList() {
+  const box = $("#sc-strategy-list");
+  const keyword = ($("#sc-strategy-search")?.value || "").toLowerCase();
+
+  if (!SC_STRATEGIES.length) {
+    box.innerHTML = '<div class="sc-empty-tip">暂无策略，点击上方新建</div>';
+    return;
+  }
+
+  const filtered = keyword
+    ? SC_STRATEGIES.filter((s) =>
+        s.name.toLowerCase().includes(keyword) ||
+        (s.desc || "").toLowerCase().includes(keyword)
+      )
+    : SC_STRATEGIES;
+
+  if (!filtered.length) {
+    box.innerHTML = '<div class="sc-empty-tip">没有匹配的策略</div>';
+    return;
+  }
+
+  box.innerHTML = filtered.map((s) => {
+    const timerEnabled = s.config?.timer?.enabled;
+    const running = timerEnabled ? "running" : "stopped";
+    const clockIcon = timerEnabled ? '<span class="sc-strategy-icon" title="定时选股">⏰</span>' : "";
+    return `
+      <div class="sc-strategy-item ${SC_CURRENT_STRATEGY === s.id ? "active" : ""}" data-id="${s.id}">
+        <span class="sc-strategy-dot ${running}" title="${timerEnabled ? "运行中" : "已停止"}"></span>
+        <div class="sc-strategy-info">
+          <div class="sc-strategy-item-name">${escapeHtml(s.name)}</div>
+          <div class="sc-strategy-item-desc">${escapeHtml(s.desc || "暂无描述")}</div>
+        </div>
+        ${clockIcon}
+      </div>`;
+  }).join("");
+
+  box.querySelectorAll(".sc-strategy-item").forEach((item) => {
+    item.addEventListener("click", () => selectStrategy(item.dataset.id));
+  });
+}
+
+$("#sc-strategy-search")?.addEventListener("input", renderStrategyList);
+
+function renderBtStrategyOptions() {
+  const group = $("#sc-bt-my-indicators");
+  if (!group) return;
+  const currentOpt = '<option value="current">使用当前策略</option>';
+  const customOpts = SC_STRATEGIES.map((s) =>
+    `<option value="ind_${s.id}">${escapeHtml(s.name)}</option>`
+  ).join("");
+  group.innerHTML = currentOpt + customOpts;
+}
+
+function clearStrategyView() {
+  $("#sc-code").value = "";
+  $("#sc-code-name").textContent = "--";
+  $("#sc-code-desc").textContent = "--";
+  $("#sc-strategy-name").textContent = "--";
+  $("#sc-result-count").textContent = "--";
+  $("#sc-results tbody").innerHTML =
+    '<tr><td colspan="9" style="text-align:center;color:#4d5d7d">选择策略后点击"立即选股"</td></tr>';
+  $("#sc-push-result").style.display = "none";
+  $("#sc-edit-code").style.display = "none";
+  $("#sc-save-code").style.display = "none";
+  $("#sc-cancel-code").style.display = "none";
+  $("#sc-check-syntax").style.display = "none";
+}
+
+function selectStrategy(id) {
+  const s = SC_STRATEGIES.find((x) => x.id === id);
+  if (!s) return;
+  SC_CURRENT_STRATEGY = id;
+  SC_CODE_EDIT = false;
+
+  $("#sc-code").value = s.code || "";
+  $("#sc-code").readOnly = true;
+  $("#sc-code-name").textContent = s.name || "--";
+  $("#sc-code-desc").textContent = s.desc || "--";
+  $("#sc-strategy-name").textContent = s.name || "--";
+
+  $("#sc-edit-code").style.display = "";
+  $("#sc-save-code").style.display = "none";
+  $("#sc-cancel-code").style.display = "none";
+  $("#sc-check-syntax").style.display = "none";
+  $("#sc-code-meta").style.display = "";
+  $("#sc-code-name-edit").style.display = "none";
+
+  const cfg = s.config || {};
+  const scope = cfg.scope || ["all"];
+  const scopeStr = Array.isArray(scope) ? scope.join(",") : scope;
+  let preset = "custom";
+  if (scopeStr === "all") preset = "all";
+  else if (scopeStr === "sh_main,sz_main") preset = "hs_a";
+  $("#sc-scope-preset").value = preset;
+  $("#sc-scope-custom").style.display = preset === "custom" ? "" : "none";
+
+  document.querySelectorAll("#sc-scope-custom input[type='checkbox']").forEach((cb) => {
+    cb.checked = scope.includes(cb.value);
+  });
+
+  const exclude = cfg.exclude || ["st", "suspend"];
+  document.querySelectorAll(".sc-config-wrap .sc-chk-grid input[type='checkbox']").forEach((cb) => {
+    cb.checked = exclude.includes(cb.value);
+  });
+
+  $("#sc-adjust").value = cfg.adjust || "qfq";
+  $("#sc-limit").value = cfg.limit || 100;
+  $("#sc-sort").value = cfg.sort_by || "mcap_yi";
+
+  const timer = cfg.timer || {};
+  $("#sc-timer-enabled").checked = !!timer.enabled;
+  $("#sc-timer-options").style.display = timer.enabled ? "" : "none";
+  $("#sc-push-time").value = timer.time || "15:05";
+
+  $("#sc-result-count").textContent = "--";
+  $("#sc-results tbody").innerHTML =
+    '<tr><td colspan="9" style="text-align:center;color:#4d5d7d">点击"立即选股"开始选股</td></tr>';
+  $("#sc-push-result").style.display = "none";
+
+  renderStrategyList();
+}
+
+$("#sc-scope-preset").addEventListener("change", (e) => {
+  const val = e.target.value;
+  const customBox = $("#sc-scope-custom");
+  if (val === "custom") {
+    customBox.style.display = "";
+  } else {
+    customBox.style.display = "none";
+  }
+});
+
+$("#sc-timer-enabled").addEventListener("change", (e) => {
+  $("#sc-timer-options").style.display = e.target.checked ? "" : "none";
+});
+
+// ── 新建策略 ──
+$("#sc-new-strategy").addEventListener("click", () => {
+  SC_CURRENT_STRATEGY = null;
+  SC_CODE_EDIT = true;
+  $("#sc-code").value = "";
+  $("#sc-code").readOnly = false;
+  $("#sc-code-name").textContent = "新策略";
+  $("#sc-code-desc").textContent = "--";
+  $("#sc-strategy-name").textContent = "新策略（未保存）";
+  $("#sc-code-meta").style.display = "none";
+  $("#sc-code-name-edit").style.display = "";
+  $("#sc-name").value = "";
+  $("#sc-desc").value = "";
+
+  $("#sc-edit-code").style.display = "none";
+  $("#sc-save-code").style.display = "";
+  $("#sc-cancel-code").style.display = "";
+  $("#sc-check-syntax").style.display = "";
+
+  $("#sc-result-count").textContent = "--";
+  $("#sc-results tbody").innerHTML =
+    '<tr><td colspan="9" style="text-align:center;color:#4d5d7d">保存策略后可进行选股</td></tr>';
+  $("#sc-push-result").style.display = "none";
+
+  renderStrategyList();
+  document.querySelector('.sc-tab[data-tab="formula"]').click();
+});
+
+// ── 编辑代码 ──
+$("#sc-edit-code").addEventListener("click", () => {
+  if (!SC_CURRENT_STRATEGY) return;
+  SC_CODE_EDIT = true;
+  const s = SC_STRATEGIES.find((x) => x.id === SC_CURRENT_STRATEGY);
+  if (!s) return;
+
+  $("#sc-code").readOnly = false;
+  $("#sc-code-meta").style.display = "none";
+  $("#sc-code-name-edit").style.display = "";
+  $("#sc-name").value = s.name || "";
+  $("#sc-desc").value = s.desc || "";
+
+  $("#sc-edit-code").style.display = "none";
+  $("#sc-save-code").style.display = "";
+  $("#sc-cancel-code").style.display = "";
+  $("#sc-check-syntax").style.display = "";
+});
+
+$("#sc-cancel-code").addEventListener("click", () => {
+  if (SC_CURRENT_STRATEGY) {
+    selectStrategy(SC_CURRENT_STRATEGY);
+  } else {
+    SC_CODE_EDIT = false;
+    clearStrategyView();
+  }
+});
+
+$("#sc-check-syntax").addEventListener("click", async () => {
+  const code = $("#sc-code").value;
+  if (!code.trim()) { alert("代码不能为空"); return; }
+  try {
+    const r = await fetch("/api/indicators/check-syntax", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code }),
+    }).then((x) => x.json());
+    if (r.ok) {
+      alert("✓ 语法检查通过");
+    } else {
+      alert("✗ 语法错误：\n" + r.error);
+    }
+  } catch (e) {
+    alert("检查失败: " + e);
+  }
+});
+
+$("#sc-save-code").addEventListener("click", async () => {
+  const code = $("#sc-code").value;
+  const name = $("#sc-name").value.trim();
+  const desc = $("#sc-desc").value.trim();
+  if (!name) { alert("请填写策略名称"); return; }
+  if (!code.trim()) { alert("代码不能为空"); return; }
+
+  let r;
+  if (SC_CURRENT_STRATEGY) {
+    r = await fetch(`/api/indicators/${SC_CURRENT_STRATEGY}`, {
+      method: "PUT", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, desc, code }),
+    }).then((x) => x.json());
+  } else {
+    r = await fetch("/api/indicators", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, desc, code }),
+    }).then((x) => x.json());
+  }
+
+  if (r.error) { alert("保存失败：" + r.error); return; }
+  await loadStrategies();
+  selectStrategy(r.id);
+  alert("保存成功");
+});
+
+// ── 保存配置 ──
+$("#sc-save-config-btn").addEventListener("click", async () => {
+  if (!SC_CURRENT_STRATEGY) {
+    alert("请先选择或创建一个策略");
+    return;
+  }
+
+  let scope;
+  const preset = $("#sc-scope-preset").value;
+  if (preset === "all") scope = ["all"];
+  else if (preset === "hs_a") scope = ["sh_main", "sz_main"];
+  else {
+    scope = Array.from(document.querySelectorAll("#sc-scope-custom input:checked"))
+      .map((cb) => cb.value);
+    if (scope.length === 0) { alert("请至少选择一个板块"); return; }
+  }
+
+  const exclude = Array.from(
+    document.querySelectorAll(".sc-config-wrap .sc-chk-grid input:checked")
+  ).map((cb) => cb.value);
+
+  const config = {
+    scope,
+    exclude,
+    adjust: $("#sc-adjust").value,
+    limit: Number($("#sc-limit").value) || 100,
+    sort_by: $("#sc-sort").value,
+    timer: {
+      enabled: $("#sc-timer-enabled").checked,
+      time: $("#sc-push-time").value,
+      target: $("#sc-feishu-target").value,
+    },
+  };
+
+  const r = await fetch(`/api/indicators/${SC_CURRENT_STRATEGY}`, {
+    method: "PUT", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ config }),
+  }).then((x) => x.json());
+
+  if (r.error) { alert("保存失败：" + r.error); return; }
+  await loadStrategies();
+  alert("配置已保存");
+});
+
+$("#sc-reset-config").addEventListener("click", () => {
+  if (SC_CURRENT_STRATEGY) {
+    selectStrategy(SC_CURRENT_STRATEGY);
+  }
+});
+
+// ── 立即选股 ──
+$("#sc-run-screen").addEventListener("click", async () => {
+  if (!SC_CURRENT_STRATEGY) {
+    alert("请先选择一个策略"); return;
+  }
+  const s = SC_STRATEGIES.find((x) => x.id === SC_CURRENT_STRATEGY);
+  if (!s) return;
+
+  $("#sc-run-screen").style.display = "none";
+  $("#sc-cancel-screen").style.display = "";
+  $("#sc-progress").style.display = "";
+  $("#sc-progress-fill").style.width = "0%";
+  $("#sc-progress-text").textContent = "准备中…";
+  $("#sc-results tbody").innerHTML =
+    '<tr><td colspan="9" style="text-align:center;color:#4d5d7d">正在扫描股票池…</td></tr>';
+
+  try {
+    const r = await fetch("/api/screen/start", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code: s.code, config: s.config }),
+    }).then((x) => x.json());
+    if (r.error) { alert(r.error); resetScreenBtn(); return; }
+    SC_TASK_ID = r.task_id;
+    pollScreenProgress();
+  } catch (e) {
+    alert("选股启动失败: " + e);
+    resetScreenBtn();
+  }
+});
+
+function resetScreenBtn() {
+  $("#sc-run-screen").style.display = "";
+  $("#sc-cancel-screen").style.display = "none";
+}
+
+$("#sc-cancel-screen").addEventListener("click", async () => {
+  if (!SC_TASK_ID) return;
+  await fetch(`/api/screen/cancel/${SC_TASK_ID}`, { method: "POST" });
+});
+
+function pollScreenProgress() {
+  if (SC_POLL_TIMER) clearInterval(SC_POLL_TIMER);
+  SC_POLL_TIMER = setInterval(async () => {
+    if (!SC_TASK_ID) { clearInterval(SC_POLL_TIMER); return; }
+    try {
+      const st = await fetch(`/api/screen/state/${SC_TASK_ID}`).then((r) => r.json());
+      const pct = st.total ? Math.round(st.progress / st.total * 100) : 0;
+      $("#sc-progress-fill").style.width = pct + "%";
+      const estDays = st.est_days ? `（K线 ${st.est_days} 天）` : "";
+      $("#sc-progress-text").textContent =
+        `已扫描 ${st.progress || 0} / ${st.total || 0} 只 · 命中 ${st.results?.length || 0} 只 ${estDays}`;
+
+      if (st.status === "done") {
+        clearInterval(SC_POLL_TIMER);
+        SC_TASK_ID = null;
+        resetScreenBtn();
+        renderScreenResults(st.results || []);
+        $("#sc-progress").style.display = "none";
+      } else if (st.status === "error") {
+        clearInterval(SC_POLL_TIMER);
+        SC_TASK_ID = null;
+        resetScreenBtn();
+        alert("选股失败: " + st.error);
+        $("#sc-progress").style.display = "none";
+      } else if (st.status === "cancelled") {
+        clearInterval(SC_POLL_TIMER);
+        SC_TASK_ID = null;
+        resetScreenBtn();
+        $("#sc-progress-text").textContent = "已取消";
+        setTimeout(() => { $("#sc-progress").style.display = "none"; }, 1500);
+      }
+    } catch (e) {}
+  }, 1500);
+}
+
+function renderScreenResults(results) {
+  SC_LAST_RESULTS = results;
+  $("#sc-result-count").textContent = `命中 ${results.length} 只`;
+  $("#sc-push-result").style.display = results.length > 0 ? "" : "none";
+
+  if (!results.length) {
+    $("#sc-results tbody").innerHTML =
+      '<tr><td colspan="9" style="text-align:center;color:#4d5d7d">暂无符合条件的股票</td></tr>';
+    return;
+  }
+
+  const today = new Date().toLocaleDateString("zh-CN");
+  $("#sc-results tbody").innerHTML = results.map((r) => {
+    const cls = r.change_pct > 0 ? "change-up" : r.change_pct < 0 ? "change-down" : "change-flat";
+    const sign = r.change_pct > 0 ? "+" : "";
+    return `<tr>
+      <td class="mono">${r.code}</td>
+      <td>${r.name}</td>
+      <td class="num mono">${r.price.toFixed(2)}</td>
+      <td class="num mono ${cls}">${sign}${r.change_pct.toFixed(2)}%</td>
+      <td class="num mono">${r.mcap_yi.toFixed(1)}</td>
+      <td class="num mono">${(r.amount_yi || 0).toFixed(2)}</td>
+      <td>--</td>
+      <td class="mono" style="font-size:12px;color:var(--sub)">${today}</td>
+      <td>${r.industry || "--"}</td>
+    </tr>`;
+  }).join("");
+}
+
+// ── 推送飞书 ──
+$("#sc-push-result").addEventListener("click", async () => {
+  if (!SC_LAST_RESULTS.length || !SC_CURRENT_STRATEGY) return;
+  const btn = $("#sc-push-result");
+  const origText = btn.textContent;
+  btn.textContent = "推送中…";
+  btn.disabled = true;
+  try {
+    const s = SC_STRATEGIES.find((x) => x.id === SC_CURRENT_STRATEGY);
+    const r = await fetch("/api/feishu/push-screen", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        indicator_id: SC_CURRENT_STRATEGY,
+        indicator_name: s?.name || "智能选股",
+        results: SC_LAST_RESULTS,
+      }),
+    }).then((x) => x.json());
+    if (r.ok) {
+      alert("推送成功");
+    } else {
+      alert("推送失败：" + (r.error || "未知错误"));
+    }
+  } catch (e) {
+    alert("推送失败: " + e);
+  } finally {
+    btn.textContent = origText;
+    btn.disabled = false;
+  }
+});
+
+// ── 回测 ──
+const BUILTIN_BT_INDICATORS = {
+  macd: "DIF:=EMA(C,12)-EMA(C,26);\nDEA:=EMA(DIF,9);\n买入信号:CROSS(DIF,DEA);",
+  kdj: "K:=KDJ.K;\nD:=KDJ.D;\n买入信号:CROSS(K,D);",
+  ma5_10: "MA5:=MA(C,5);\nMA10:=MA(C,10);\n买入信号:CROSS(MA5,MA10);",
+  ma20_60: "MA20:=MA(C,20);\nMA60:=MA(C,60);\n买入信号:CROSS(MA20,MA60);",
+  rsi: "RSI1:=RSI(C,14);\n买入信号:CROSS(RSI1,30);",
+  boll: "UPPER:=BOLL(20,2);\n买入信号:CROSS(C,UPPER);",
+};
+
+$("#sc-bt-run").addEventListener("click", async () => {
+  const indicator = $("#sc-bt-indicator").value;
+  let code;
+  if (indicator === "current") {
+    if (!SC_CURRENT_STRATEGY) { alert("请先选择一个策略"); return; }
+    const s = SC_STRATEGIES.find((x) => x.id === SC_CURRENT_STRATEGY);
+    code = s?.code || "";
+  } else if (indicator.startsWith("ind_")) {
+    const indId = indicator.substring(4);
+    const ind = SC_STRATEGIES.find((x) => x.id === indId);
+    if (!ind) { alert("找不到该策略"); return; }
+    code = ind.code;
+  } else {
+    code = BUILTIN_BT_INDICATORS[indicator];
+  }
+  if (!code.trim()) { alert("策略代码为空"); return; }
+
+  const pool = $("#sc-bt-pool").value;
+  const days = Number($("#sc-bt-days").value) || 250;
+  const adjust = $("#sc-bt-adjust").value;
+
+  $("#sc-bt-run").textContent = "回测中…";
+  $("#sc-bt-run").disabled = true;
+
+  try {
+    const benchCode = pool === "hs300" ? "sh000300" : pool === "zz500" ? "sh000905" : "sh000001";
+    const r = await fetch("/api/screen/backtest", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code, stock_code: benchCode, days, adjust }),
+    }).then((x) => x.json());
+    if (r.error) { alert(r.error); return; }
+    renderScBacktest(r);
+  } catch (e) {
+    alert("回测失败: " + e);
+  } finally {
+    $("#sc-bt-run").textContent = "开始回测";
+    $("#sc-bt-run").disabled = false;
+  }
+});
+
+function renderScBacktest(r) {
+  $("#sc-bt-empty").style.display = "none";
+  $("#sc-bt-stats").style.display = "grid";
+  $("#sc-bt-chart-card").style.display = "block";
+  $("#sc-bt-trades-card").style.display = "block";
+
+  const totalRet = Number(r.total_ret || 0);
+  const annualRet = Number(r.annual_ret || 0);
+  const maxDd = Number(r.max_drawdown || 0);
+  const winRate = Number(r.win_rate || 0);
+  const profitRatio = Number(r.profit_ratio || 0);
+
+  $("#sc-bt-total-ret").textContent = totalRet.toFixed(2) + "%";
+  $("#sc-bt-total-ret").className = "sc-stat-value " + (totalRet >= 0 ? "positive" : "negative");
+
+  $("#sc-bt-annual-ret").textContent = annualRet.toFixed(2) + "%";
+  $("#sc-bt-annual-ret").className = "sc-stat-value " + (annualRet >= 0 ? "positive" : "negative");
+
+  $("#sc-bt-max-dd").textContent = maxDd.toFixed(2) + "%";
+
+  $("#sc-bt-win-rate").textContent = winRate.toFixed(1) + "%";
+  $("#sc-bt-win-rate").className = "sc-stat-value " + (winRate >= 50 ? "positive" : "");
+
+  $("#sc-bt-profit-ratio").textContent = profitRatio.toFixed(2);
+  $("#sc-bt-trade-count").textContent = r.trade_count || 0;
+
+  if (!scBtChart) scBtChart = echarts.init($("#sc-bt-chart"));
+  scBtChart.setOption({
+    backgroundColor: "transparent",
+    tooltip: { trigger: "axis" },
+    legend: { data: ["策略净值", "基准收益"], textStyle: { color: "#8392ad" }, top: 0 },
+    grid: { left: 60, right: 20, top: 40, bottom: 40 },
+    xAxis: { type: "category", data: r.dates, axisLine: { lineStyle: { color: "#1c2942" } }, axisLabel: { color: "#4d5d7d" } },
+    yAxis: { type: "value", scale: true, splitLine: { lineStyle: { color: "#1c2942" } }, axisLabel: { color: "#4d5d7d" } },
+    series: [
+      { name: "策略净值", type: "line", data: r.equity, smooth: true, showSymbol: false, lineStyle: { color: "#ff4d5f", width: 2 }, areaStyle: { color: "rgba(255,77,95,.08)" } },
+      { name: "基准收益", type: "line", data: r.benchmark, smooth: true, showSymbol: false, lineStyle: { color: "#7c5cff", width: 1.5, type: "dashed" } },
+    ],
+  });
+  setTimeout(() => scBtChart.resize(), 50);
+
+  const rows = r.trades?.length
+    ? r.trades.map((t) => {
+        const ret = t.ret * 100;
+        const cls = ret >= 0 ? "change-up" : "change-down";
+        return `<tr>
+          <td class="mono">${t.buy_date}</td>
+          <td class="mono">${t.sell_date}</td>
+          <td class="num mono">${fmt(t.buy_price, 4)}</td>
+          <td class="num mono">${fmt(t.sell_price, 4)}</td>
+          <td class="num mono ${cls}">${ret >= 0 ? "+" : ""}${ret.toFixed(2)}%</td>
+          <td class="num mono">${t.days}</td></tr>`;
+      }).join("")
+    : `<tr><td colspan="6" style="text-align:center;color:#4d5d7d">该区间内无交易信号</td></tr>`;
+  $("#sc-bt-trades").innerHTML =
+    `<thead><tr><th>买入日</th><th>卖出日</th><th class="num">买入价</th><th class="num">卖出价</th><th class="num">单次收益</th><th class="num">持天数</th></tr></thead><tbody>${rows}</tbody>`;
+}
 
 // ── 初始化 ─────────────────────────────
 loadOverview();
