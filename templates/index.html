@@ -14,10 +14,11 @@
     <div class="tab" data-page="screener">智能选股</div>
     <div class="tab" data-page="sentiment">市场情绪</div>
     <div class="tab" data-page="rules">推送规则</div>
-    <div class="tab" data-page="watch">自选看板</div>
   </div>
   <div class="sp"></div>
-  <button class="btn ghost sm" id="ov-refresh">刷新概览</button>
+  <div class="live-indicator" id="live-indicator"><span class="live-dot"></span><span class="live-text">休市</span></div>
+  <button class="btn ghost sm" id="ov-refresh">刷新数据</button>
+  <div class="data-time mono" id="data-time">DATA: --</div>
   <div id="clock" class="mono"></div>
 </div>
 
@@ -25,8 +26,17 @@
 
   <!-- ═══ 市场概览（首页） ═══ -->
   <div class="page on" id="page-overview">
-    <div class="idx-strip" id="ov-indexes">
-      <div class="idx-card"><div class="nm">加载中…</div><div class="px mono">--</div></div>
+    <div class="card">
+      <h3>大盘实时行情</h3>
+      <div class="idx-strip" id="ov-indexes">
+        <div class="idx-card"><div class="nm">加载中…</div><div class="px mono">--</div></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>涨跌统计 <span class="hint">全市场涨跌幅分布</span></h3>
+      <div id="distribution-chart" class="chart-mid"></div>
+      <div class="dist-summary" id="dist-summary"></div>
     </div>
 
     <div class="card">
@@ -54,6 +64,20 @@
       <div class="note">蜡烛图 + MA5/10/20 均线；下方副图为成交量。红涨绿跌。</div>
     </div>
 
+    <!-- Task 16：指数走势对比（4指数归一化） -->
+    <div class="card" id="index-compare-card">
+      <h3>指数走势对比 <span class="hint" id="index-compare-hint">近60日 归一化累计涨幅（起始日=100）</span></h3>
+      <div class="toolbar">
+        <div class="seg" id="index-compare-range">
+          <button class="seg-btn" data-days="15">近15日</button>
+          <button class="seg-btn" data-days="30">近30日</button>
+          <button class="seg-btn on" data-days="60">近60日</button>
+        </div>
+      </div>
+      <div id="index-compare-chart" class="chart-big"></div>
+      <div class="note">上证/深证/创业板/沪深300 统一基期对比，便于相对强弱判断。</div>
+    </div>
+
     <div class="card">
       <h3>市场量能 <span class="hint mono" id="ln-date">--</span><a class="ln-hist" id="ln-toggle">历史量能</a></h3>
       <div class="ln-metrics">
@@ -78,39 +102,70 @@
     <div class="overview-grid">
       <div class="card sent-card">
         <h3>市场情绪 <span class="hint mono" id="ov-date"></span></h3>
-        <div class="sent-head">
-          <div class="sent-scorebox">
-            <div class="sent-score mono" id="ov-score">--</div>
-            <div class="sent-level" id="ov-level">--</div>
+        <div class="sent-body">
+          <!-- 左列：仪表盘 + 6格指标 + 解读提示 -->
+          <div class="sent-left">
+            <div class="sent-head">
+              <div class="sent-scorebox">
+                <div class="sent-score mono" id="ov-score">--</div>
+                <div class="sent-level" id="ov-level">--</div>
+              </div>
+              <div class="sent-gauge">
+                <div class="gauge-track"><div class="gauge-fill" id="ov-gauge"></div></div>
+                <div class="gauge-scale"><span>0 冰点</span><span>50 正常</span><span>100 过热</span></div>
+              </div>
+            </div>
+            <div class="sent-stats" id="ov-dims"></div>
+            <div class="tip" id="ov-tip">--</div>
           </div>
-          <div class="sent-gauge">
-            <div class="gauge-track"><div class="gauge-fill" id="ov-gauge"></div></div>
-            <div class="gauge-scale"><span>0 冰点</span><span>50 正常</span><span>100 过热</span></div>
+          <!-- 中列：近15日情绪大尺寸走势图 -->
+          <div class="sent-middle">
+            <div class="sent-title-sub">近15日情绪走势</div>
+            <div id="ov-sent-big" style="height:280px"></div>
+          </div>
+          <!-- 右列：变化方向 + 6因子徽章（SubTask 17.3 去重复，保留 DOM 但隐藏）
+          <div class="sent-right">
+            <div class="sent-change-box" id="ov-sent-change"></div>
+            <div class="sent-factors" id="ov-sent-factors"></div>
+          </div>
+          -->
+        </div>
+      </div>
+      <!-- SubTask 12.2：已移除 5 张旧表格卡片（炸板/跌停/热点板块/涨停梯队/热门概念）-->
+      <div class="card">
+        <h3>行业领涨领跌 Top10 <span class="hint">左领涨红柱 · 右领跌绿柱，刻度统一可比</span></h3>
+        <div class="boards-top10">
+          <div class="boards-col">
+            <div class="boards-title up">领涨 TOP10</div>
+            <div id="boards-up"></div>
+          </div>
+          <div class="boards-col">
+            <div class="boards-title down">领跌 TOP10</div>
+            <div id="boards-down"></div>
           </div>
         </div>
-        <div class="sent-stats" id="ov-dims"></div>
-        <div class="tip" id="ov-tip">--</div>
       </div>
       <div class="card">
-        <h3>炸板股 <span class="hint mono" id="ov-zb-count"></span></h3>
-        <div class="tbl-wrap"><table class="tbl" id="ov-zb"></table></div>
+        <h3>综合黄金行情 <span class="hint">伦敦金 / COMEX金 / AU9999 <span id="gold-msg" class="hint" style="color:#ff8f99"></span></span></h3>
+        <div class="gold-spot" id="gold-spot"></div>
+        <div class="note" id="gold-history-label">近30日黄金ETF 518880 走势（代理国内金价，非伦敦金 XAUUSD）</div>
+        <div id="gold-history-chart" style="height:240px"></div>
       </div>
-      <div class="card">
-        <h3>跌停股 <span class="hint mono" id="ov-dt-count"></span></h3>
-        <div class="tbl-wrap"><table class="tbl" id="ov-dt"></table></div>
+    </div>
+
+    <div class="card">
+      <h3>自选标的实时行情 <span class="hint mono" id="w-time"></span></h3>
+      <!-- 自选标的添加区域：输入代码验证后加入 watchlist -->
+      <div class="w-add-area">
+        <input type="text" id="w-add-input" class="w-add-input" placeholder="输入股票代码，如 510300">
+        <button class="btn sm" id="w-add-btn">添加</button>
+        <span class="w-add-msg" id="w-add-msg"></span>
       </div>
-      <div class="card">
-        <h3>热点板块 <span class="hint">行业涨幅榜 Top10</span></h3>
-        <div class="tbl-wrap"><table class="tbl" id="ov-boards"></table></div>
-      </div>
-      <div class="card">
-        <h3>涨停梯队 <span class="hint" id="ov-ladder"></span></h3>
-        <div class="tbl-wrap"><table class="tbl" id="ov-zt"></table></div>
-      </div>
-      <div class="card">
-        <h3>热门概念 <span class="hint">概念涨幅榜 Top10</span></h3>
-        <div class="tbl-wrap"><table class="tbl" id="ov-concept"></table></div>
-      </div>
+      <div class="tbl-wrap"><table class="tbl">
+        <thead><tr><th>名称</th><th>代码</th><th class="num">现价</th><th class="num">涨跌幅</th><th class="num">成交额(亿)</th><th class="num">换手率</th><th>操作</th></tr></thead>
+        <tbody id="w-tbody"></tbody>
+      </table></div>
+      <div style="text-align:right;margin-top:12px"><button class="btn ghost" id="w-refresh">刷新行情</button></div>
     </div>
   </div>
 
@@ -523,19 +578,6 @@
         <button class="btn ghost" id="r-check">立即检查并推送</button>
       </div>
       <div class="note" id="r-result"></div>
-    </div>
-  </div>
-
-  <!-- ═══ 自选看板 ═══ -->
-  <div class="page" id="page-watch">
-    <div class="stat-grid" id="w-index"></div>
-    <div class="card">
-      <h3>自选标的实时行情 <span class="hint mono" id="w-time"></span></h3>
-      <div class="tbl-wrap"><table class="tbl">
-        <thead><tr><th>名称</th><th>代码</th><th class="num">现价</th><th class="num">涨跌幅</th><th class="num">成交额(亿)</th><th class="num">换手率</th></tr></thead>
-        <tbody id="w-tbody"></tbody>
-      </table></div>
-      <div style="text-align:right;margin-top:12px"><button class="btn ghost" id="w-refresh">刷新行情</button></div>
     </div>
   </div>
 

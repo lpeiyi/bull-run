@@ -70,8 +70,46 @@ def _zb_count(date):
     return len(_em_pool("getTopicZBPool", date))
 
 
+def _is_dt_stock(stock):
+    """判断单只股票是否跌停。
+    依赖新浪 change_pct 字段（单位百分比，如 -10.02 表示跌 10.02%）。
+    规则：主板 <= -9.8%，创业板(300)/科创板(688) <= -19.5%，北交所(bj) <= -29.5%。
+    """
+    pct = stock.get("change_pct")
+    if pct is None:
+        return False
+    pure_code = stock.get("pure_code", "")
+    market = stock.get("market", "")
+    if market == "bj":
+        return pct <= -29.5
+    if pure_code.startswith("300") or pure_code.startswith("688"):
+        return pct <= -19.5
+    return pct <= -9.8
+
+
+def _dt_list_sina():
+    """基于新浪全市场行情返回当日跌停股票列表。
+    load_stock_list 有 24 小时缓存，不会频繁请求。
+    返回: 跌停股票列表（list）；失败返回 None（用于调用方回退东财）。
+    """
+    try:
+        from core.screener import load_stock_list
+        stocks = load_stock_list()
+    except Exception:
+        return None
+    return [s for s in stocks if _is_dt_stock(s)]
+
+
 def _dt_count(date):
-    """跌停家数（东财仅保留当日，历史日期返回 0）"""
+    """跌停家数。
+    当日实时：用新浪全市场行情计算（load_stock_list 有 24 小时缓存，覆盖全市场）。
+    历史日期：新浪列表只有当日数据，回退东财 getTopicDTPool 兜底（可能不全）。
+    """
+    today = datetime.now().strftime("%Y%m%d")
+    if date == today:
+        dt_list = _dt_list_sina()
+        if dt_list is not None:
+            return len(dt_list)
     return len(_em_pool("getTopicDTPool", date))
 
 

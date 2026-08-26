@@ -99,7 +99,32 @@ def get_zb_pool(date):
 
 
 def get_dt_pool(date):
-    """跌停池明细"""
+    """跌停池明细。
+    当日实时：用新浪全市场行情构建完整跌停股列表（覆盖更全）。
+    历史日期：新浪列表只有当日数据，回退东财 getTopicDTPool 兜底。
+    返回结构: [{code, name, price, pct, dt_days, industry}]
+    """
+    today = datetime.now().strftime("%Y%m%d")
+    if date == today:
+        try:
+            from core.sentiment import _dt_list_sina
+            dt_list = _dt_list_sina()
+        except Exception:
+            dt_list = None
+        # dt_list is None 表示新浪拉取失败；空列表表示当日无跌停
+        if dt_list is not None:
+            out = []
+            for s in dt_list:
+                out.append({
+                    "code": s.get("pure_code") or s.get("code", ""),
+                    "name": s.get("name", ""),
+                    "price": round(s.get("price") or 0, 2),
+                    "pct": round(s.get("change_pct") or 0, 2),
+                    "dt_days": 1,  # 新浪数据无连板天数，默认 1
+                    "industry": s.get("industry", ""),
+                })
+            return out
+    # 历史日期或新浪失败时兜底：东财接口
     out = []
     for p in _em_pool("getTopicDTPool", date):
         out.append({
@@ -181,6 +206,48 @@ def _trade_elapsed_ratio(now):
     else:
         return None
     return min(max(elapsed / total, 0.001), 1.0)
+
+
+# A股典型分时量能分布权重（按 30 分钟一段，共 8 段，合计 1.0）
+# U 型曲线：开盘半小时与尾盘各约占 15%，上午其余约 35%，午后约 35%
+# 顺序：9:30-10:00, 10:00-10:30, 10:30-11:00, 11:00-11:30,
+#       13:00-13:30, 13:30-14:00, 14:00-14:30, 14:30-15:00
+_INTRADAY_SEG_WEIGHTS = (0.15, 0.13, 0.11, 0.11, 0.11, 0.11, 0.13, 0.15)
+
+
+def _intraday_cum_weight(elapsed_min):
+    """按 A股分时 U 型分布，返回已过 elapsed_min 分钟的累计量能占比(0~1)。
+    elapsed_min: 0~240；段内按线性插值。
+    """
+    if elapsed_min <= 0:
+        return 0.0
+    if elapsed_min >= 240:
+        return 1.0
+    seg = int(elapsed_min // 30)            # 0~7
+    offset = elapsed_min - seg * 30        # 段内偏移 0~30
+    cum = sum(_INTRADAY_SEG_WEIGHTS[:seg])
+    cum += _INTRADAY_SEG_WEIGHTS[seg] * (offset / 30.0)
+    return cum
+
+
+def _intraday_weight_ratio(now):
+    """当前时刻按 A股 U 型分时分布应完成的量能占比(0~1)。
+    非交易时段返回 None。用于替代线性时间占比做量能预测外推。
+    """
+    if now.weekday() >= 5:
+        return None
+    t = now.hour * 60 + now.minute
+    if t < 9 * 60 + 30:
+        return None
+    if t <= 11 * 60 + 30:
+        e = t - (9 * 60 + 30)              # 0~120
+    elif t < 13 * 60:
+        e = 120.0                          # 午休，上午已结束
+    elif t <= 15 * 60:
+        e = 120.0 + (t - 13 * 60)          # 120~240
+    else:
+        return None
+    return _intraday_cum_weight(e)
 
 
 def _elapsed_min(t):
@@ -271,14 +338,15 @@ def get_liangneng(days=20):
 
     yesterday = rows[-2]["amount"] if len(rows) >= 2 else None
 
-    # 预测量能：盘中按已过时间比例线性外推，盘后/非交易时段 = 实际值
-    ratio = _trade_elapsed_ratio(now)
-    predict = round(actual / ratio, 2) if (ratio and 0 < ratio < 1) else actual
+    # 预测量能：盘中按 A股 U 型分时量能分布外推，盘后/非交易时段 = 实际值
+    w_ratio = _intraday_weight_ratio(now)
+    predict = round(actual / w_ratio, 2) if (w_ratio and 0 < w_ratio < 1) else actual
 
     change_pct = round((predict / yesterday - 1) * 100, 2) if (predict and yesterday) else None
     change_abs = round(predict - yesterday, 2) if (predict is not None and yesterday is not None) else None
 
-    # 分时预测量能曲线：每分钟 predict = 两市累计成交额 / 已过时间占比
+    # 分时预测量能曲线：每分钟按 U 型分时分布外推
+    # pred = 两市累计成交额 / 当前时刻应完成量能占比
     intraday = []
     if yesterday:
         sh_min = _index_minute_cum("sh000001")
@@ -288,9 +356,14 @@ def get_liangneng(days=20):
             if e <= 0:
                 continue
             cum = (sh_min.get(t) or 0) + (sz_min.get(t) or 0)
-            pred = cum / (e / 240.0)
+            w = _intraday_cum_weight(e)
+            pred = cum / w if w > 0 else cum
             intraday.append({"time": f"{t[:2]}:{t[2:4]}",
                              "chg": round((pred / yesterday - 1) * 100, 2)})
+
+    # 确保分时曲线末尾包含 15:00 收盘点；数据不足时补一个 15:00 点，值为最后一个已知值
+    if intraday and intraday[-1]["time"] != "15:00":
+        intraday.append({"time": "15:00", "chg": intraday[-1]["chg"]})
 
     return {
         "trade_date": rows[-1]["date"] if rows else None,

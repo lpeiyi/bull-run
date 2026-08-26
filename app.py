@@ -13,7 +13,7 @@ import pandas as pd
 
 from flask import Flask, render_template, request, jsonify
 
-from core import backtest, emotion_history, market, rules, sentiment, screener
+from core import backtest, emotion_history, gold, market, rules, sentiment, screener
 from core.data import real_quotes, kline, kline_range
 from core.notifier import send_feishu
 from core.tdx import check_tdx_syntax
@@ -78,6 +78,39 @@ def api_quotes():
 _OVERVIEW_CACHE = {"ts": 0.0, "data": None}
 
 
+def _enrich_sentiment(s):
+    """在 sentiment 基础上补充近15日情绪分序列和上一交易日 score，供前端放大版迷你图（含6刻度Y轴+渐变）与变化方向渲染。
+    失败时回退为空数组/None，不阻塞 /api/overview 主流程。"""
+    try:
+        # 复用 emotion_trend(20) 当日缓存（后台 warmup 已预热），取末尾15日；多留几日给切片余量
+        trend = emotion_history.get_emotion_trend(20)[-15:]
+        scores = [t["score"] for t in trend]
+        labels = [t["label"] for t in trend]
+        today_date = s.get("trade_date")
+        last_date = trend[-1].get("date") if trend else None
+        if last_date == today_date:
+            # trend 已含当日，上一交易日取倒数第二个
+            prev_score = scores[-2] if len(scores) >= 2 else None
+        else:
+            # trend 末尾非当日（盘中 legu 历史未更新到当日），追加当日实时 score 到末尾
+            if today_date:
+                scores.append(s.get("score"))
+                labels.append(today_date[4:6] + "-" + today_date[6:8])
+            prev_score = scores[-2] if len(scores) >= 2 else None
+        # 严格约束为末尾 15 点，避免前端按 15 日渲染时出现冗余点
+        if len(scores) > 15:
+            scores = scores[-15:]
+            labels = labels[-15:]
+        s["history_scores"] = scores
+        s["history_labels"] = labels
+        s["prev_score"] = prev_score
+    except Exception:
+        s["history_scores"] = []
+        s["history_labels"] = []
+        s["prev_score"] = None
+    return s
+
+
 @app.route("/api/overview")
 def api_overview():
     """市场概览：指数 + 情绪 + 涨停/炸板/跌停池 + 板块，60秒缓存"""
@@ -97,7 +130,7 @@ def api_overview():
         "trade_date": f"{td[:4]}-{td[4:6]}-{td[6:8]}" if td else None,
         "index_order": market.INDEX_CODES,
         "indexes": market.get_indexes(),
-        "sentiment": s,
+        "sentiment": _enrich_sentiment(s),
         "ladder": ladder,
         "zt_pool": zt,
         "zb_pool": zb,
@@ -127,6 +160,94 @@ def api_liangneng():
     _LN_CACHE["ts"] = now
     _LN_CACHE["data"] = data
     return jsonify(data)
+
+
+_GOLD_CACHE = {"ts": 0.0, "data": None}
+
+
+@app.route("/api/gold")
+def api_gold():
+    """综合黄金行情：伦敦金 / COMEX金 / AU9999 实时 + 伦敦金近30日历史。300秒缓存。"""
+    now = time.time()
+    if _GOLD_CACHE["data"] and now - _GOLD_CACHE["ts"] < 300:
+        return jsonify(_GOLD_CACHE["data"])
+    data = gold.get_gold_overview(days=30)
+    _GOLD_CACHE["ts"] = now
+    _GOLD_CACHE["data"] = data
+    return jsonify(data)
+
+
+def _is_limit_stock(s, sign):
+    """判断涨停(sign=1)/跌停(sign=-1)。与 sentiment._is_dt_stock 口径一致：
+    主板 +-9.8%，创业板(300)/科创板(688) +-19.5%，北交所 +-29.5%。"""
+    pct = s.get("change_pct")
+    if pct is None:
+        return False
+    pure_code = s.get("pure_code", "")
+    market = s.get("market", "")
+    threshold = 29.5 if market == "bj" else (
+        19.5 if pure_code.startswith("300") or pure_code.startswith("688") else 9.8)
+    return pct >= threshold if sign > 0 else pct <= -threshold
+
+
+@app.route("/api/market_distribution")
+def api_market_distribution():
+    """全市场 A 股当日涨跌幅分布统计，9 个区间。支持 ?force=1 强制刷新股票列表缓存。"""
+    force = request.args.get("force") == "1"
+    # load_stock_list 自带 24 小时文件缓存，force=True 时强制重新拉取
+    stocks = screener.load_stock_list(force=force)
+
+    # 涨停/跌停家数：基于 stocks 的 change_pct 按市场涨跌停阈值判定，
+    # 与 sentiment._is_dt_stock 口径一致；同时统计上涨/下跌家数供汇总进度条使用
+    zt_count = sum(1 for s in stocks if _is_limit_stock(s, 1))
+    dt_count = sum(1 for s in stocks if _is_limit_stock(s, -1))
+    up_count = sum(1 for s in stocks if (s.get("change_pct") or 0) > 0)
+    down_count = sum(1 for s in stocks if (s.get("change_pct") or 0) < 0)
+
+    # 9 个涨跌幅区间（固定顺序；min/max 仅作展示用，归类用下方级联判断保证互斥）
+    ranges = [
+        {"name": "≥7%", "min": 7, "count": 0},
+        {"name": "5~7%", "min": 5, "max": 7, "count": 0},
+        {"name": "2~5%", "min": 2, "max": 5, "count": 0},
+        {"name": "0~2%", "min": 0.001, "max": 2, "count": 0},
+        {"name": "平盘", "min": -0.001, "max": 0.001, "count": 0},
+        {"name": "-2~0%", "min": -2, "max": -0.001, "count": 0},
+        {"name": "-5~-2%", "min": -5, "max": -2, "count": 0},
+        {"name": "-7~-5%", "min": -7, "max": -5, "count": 0},
+        {"name": "≤-7%", "max": -7, "count": 0},
+    ]
+
+    # 从高到低级联判断：每只股票只计入一个区间
+    # 平盘区间用严格不等式 -0.001 < pct < 0.001，边界值 0.001 归 0~2%、-0.001 归 -2~0%
+    for s in stocks:
+        pct = s.get("change_pct", 0)
+        if pct >= 7:
+            ranges[0]["count"] += 1
+        elif pct >= 5:
+            ranges[1]["count"] += 1
+        elif pct >= 2:
+            ranges[2]["count"] += 1
+        elif pct >= 0.001:
+            ranges[3]["count"] += 1   # 0~2%: 0.001 <= pct < 2
+        elif pct > -0.001:
+            ranges[4]["count"] += 1    # 平盘: -0.001 < pct < 0.001
+        elif pct >= -2:
+            ranges[5]["count"] += 1    # -2~0%: -2 <= pct <= -0.001
+        elif pct >= -5:
+            ranges[6]["count"] += 1
+        elif pct >= -7:
+            ranges[7]["count"] += 1
+        else:
+            ranges[8]["count"] += 1    # ≤-7%
+
+    return jsonify({
+        "ranges": ranges,
+        "total": len(stocks),
+        "zt_count": zt_count,
+        "dt_count": dt_count,
+        "up_count": up_count,
+        "down_count": down_count,
+    })
 
 
 # 情绪趋势图里可叠加对比的指数
@@ -257,6 +378,8 @@ INDEX_KLINE = [
 _IDX_NAME = dict(INDEX_KLINE)
 _KLINE_CACHE = {}
 
+_IDX_CMP_CACHE = {15: {"ts": 0.0, "data": None}, 30: {"ts": 0.0, "data": None}, 60: {"ts": 0.0, "data": None}}
+
 
 def _fmt_series(s):
     """Series -> [None 或 round(float,2)] 列表，NaN 记为 None 供前端断线"""
@@ -298,6 +421,62 @@ def api_index_kline():
         "ma120": ma120[-days:],
     }
     _KLINE_CACHE[key] = {"ts": time.time(), "data": data}
+    return jsonify(data)
+
+
+@app.route("/api/index_compare")
+def api_index_compare():
+    """4 指数近 N 日归一化叠加对比（N=15/30/60），按档位分缓存，600秒 TTL。force=1 跳过缓存。"""
+    codes = ["sh000001", "sz399001", "sz399006", "sh000300"]
+    names = ["上证指数", "深证成指", "创业板指", "沪深300"]
+    days = int(request.args.get("days", 60))
+    if days not in (15, 30, 60):
+        days = 60
+    force = request.args.get("force") == "1"
+    now = time.time()
+    cache = _IDX_CMP_CACHE[days]
+    if not force and cache["data"] and now - cache["ts"] < 600:
+        return jsonify(cache["data"])
+
+    idx_maps = []
+    for code in codes:
+        try:
+            df = kline(code, days=days + 10)
+            m = {d.strftime("%Y%m%d"): float(c) for d, c in zip(df["date"], df["close"])}
+            idx_maps.append(m)
+        except Exception:
+            idx_maps.append({})
+
+    common_dates = None
+    for m in idx_maps:
+        if not m:
+            continue
+        keys = set(m.keys())
+        if common_dates is None:
+            common_dates = keys
+        else:
+            common_dates = common_dates & keys
+    if common_dates is None:
+        common_dates = set()
+
+    dates = sorted(common_dates)[-days:]
+    series = []
+    for i, (code, name) in enumerate(zip(codes, names)):
+        m = idx_maps[i]
+        if not m:
+            continue
+        vals = [m.get(d) for d in dates]
+        base = next((v for v in vals if v), None)
+        if not base:
+            continue
+        series.append({
+            "name": name,
+            "values": [round(v / base * 100, 2) if v else None for v in vals],
+        })
+
+    data = {"dates": dates, "series": series}
+    cache["ts"] = now
+    cache["data"] = data
     return jsonify(data)
 
 
