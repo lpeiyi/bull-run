@@ -136,8 +136,9 @@ def get_dt_pool(date):
 
 
 def get_boards():
-    """新浪板块（行业 + 概念），按平均涨幅降序"""
-    def _parse(url):
+    """行业 + 概念板块，按平均涨幅降序。新浪主源失败时回退东财备用源。"""
+    def _parse_sina(url):
+        """新浪板块解析：返回 [] 表示拉取/解析失败。"""
         r = requests.get(url, headers={"User-Agent": UA}, timeout=12)
         r.encoding = "gbk"
         m = re.search(r"=\s*(\{.*?\})\s*;?\s*$", r.text, re.S)
@@ -159,8 +160,46 @@ def get_boards():
             except (ValueError, IndexError):
                 continue
         return rows
-    ind = _parse("https://money.finance.sina.com.cn/q/view/newSinaHy.php")
-    con = _parse("https://money.finance.sina.com.cn/q/view/newFLJK.php?param=class")
+
+    def _parse_em(fs_code):
+        """东财板块解析：fs=m:90+t:2 行业、m:90+t:3 概念。
+        f3 为整数化涨跌幅(81 表示 0.81%)，需 /100 与新浪单位对齐。"""
+        url = "https://push2.eastmoney.com/api/qt/clist/get"
+        params = {"pn": 1, "pz": 100, "po": 1, "np": 1,
+                  "fields": "f12,f14,f3", "fs": fs_code}
+        try:
+            r = requests.get(url, headers={"User-Agent": UA}, params=params, timeout=12)
+            diff = (r.json().get("data") or {}).get("diff") or []
+        except Exception:
+            return []
+        rows = []
+        for item in diff:
+            try:
+                rows.append({
+                    "name": item["f14"],
+                    "stock_count": 0,                # 东财该接口未返回成分股数
+                    "avg_pct": round(float(item["f3"]) / 100, 2),
+                    "amount_yi": 0.0,                # 东财该接口未返回成交额
+                    "leader_name": "",               # 东财该接口未返回领涨股
+                    "leader_pct": 0.0,
+                    "code": item["f12"],             # 板块代码，供扩展使用
+                })
+            except (KeyError, ValueError, TypeError):
+                continue
+        return rows
+
+    try:
+        ind = _parse_sina("https://money.finance.sina.com.cn/q/view/newSinaHy.php")
+        con = _parse_sina("https://money.finance.sina.com.cn/q/view/newFLJK.php?param=class")
+    except Exception:
+        ind, con = [], []
+
+    # 新浪任一源为空则用东财备用源兜底
+    if not ind:
+        ind = _parse_em("m:90+t:2")
+    if not con:
+        con = _parse_em("m:90+t:3")
+
     ind.sort(key=lambda x: x["avg_pct"], reverse=True)
     con.sort(key=lambda x: x["avg_pct"], reverse=True)
     return {"industry": ind, "concept": con}
@@ -361,8 +400,8 @@ def get_liangneng(days=20):
             intraday.append({"time": f"{t[:2]}:{t[2:4]}",
                              "chg": round((pred / yesterday - 1) * 100, 2)})
 
-    # 确保分时曲线末尾包含 15:00 收盘点；数据不足时补一个 15:00 点，值为最后一个已知值
-    if intraday and intraday[-1]["time"] != "15:00":
+    # 盘后(>=15:00)才补 15:00 收盘点；盘中不补，避免 ECharts 等距 X 轴把末端真实点拉到 15:00 处
+    if intraday and intraday[-1]["time"] != "15:00" and now.hour * 60 + now.minute >= 900:
         intraday.append({"time": "15:00", "chg": intraday[-1]["chg"]})
 
     return {

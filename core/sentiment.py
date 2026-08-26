@@ -160,13 +160,21 @@ def _calc_score(zt_n, dt_n, max_height, promo_rate, break_rate):
         level = "偏热"
     else:
         level = "过热"
-    return score, level
+    # 各维度对总分的正负贡献明细（用于前端可视化）
+    contributions = {
+        "涨停家数": round(base, 2),
+        "连板高度": height,
+        "晋级率": promo,
+        "炸板率": zb,
+        "跌停惩罚": round(dt, 2),
+    }
+    return score, level, contributions
 
 
 def get_sentiment():
     """
     计算当前市场情绪分。返回 {score, level, trade_date, zt_count, dt_count,
-    zb_count, break_rate, promo_rate, max_height}
+    zb_count, break_rate, promo_rate, max_height, contributions}
     """
     date = _find_recent_trade_date()
     if not date:
@@ -179,10 +187,11 @@ def get_sentiment():
     promo_rate = _promo_rate(date, zt_codes)
     break_rate = round(zb_n / (zt_n + zb_n) * 100, 1) if (zt_n + zb_n) else 0.0
 
-    score, level = _calc_score(zt_n, dt_n, max_height, promo_rate, break_rate)
+    score, level, contributions = _calc_score(zt_n, dt_n, max_height, promo_rate, break_rate)
 
     return {
         "score": score, "level": level, "trade_date": date,
         "zt_count": zt_n, "dt_count": dt_n, "zb_count": zb_n,
         "break_rate": break_rate, "promo_rate": promo_rate, "max_height": max_height,
+        "contributions": contributions,
     }

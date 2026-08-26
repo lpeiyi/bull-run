@@ -8,6 +8,7 @@ import os
 import threading
 import time
 from collections import Counter
+from datetime import datetime
 
 import pandas as pd
 
@@ -23,6 +24,8 @@ CONFIG_FILE = os.path.join(BASE, "config.json")
 INDICATOR_FILE = os.path.join(BASE, "indicators.json")
 
 app = Flask(__name__)
+# 禁用模板缓存：磁盘模板变更时即时生效，避免 Jinja bytecode 残留
+app.config["TEMPLATES_AUTO_RELOAD"] = True
 
 
 # ── 配置读写 ────────────────────────────────────────
@@ -79,35 +82,85 @@ _OVERVIEW_CACHE = {"ts": 0.0, "data": None}
 
 
 def _enrich_sentiment(s):
-    """在 sentiment 基础上补充近15日情绪分序列和上一交易日 score，供前端放大版迷你图（含6刻度Y轴+渐变）与变化方向渲染。
-    失败时回退为空数组/None，不阻塞 /api/overview 主流程。"""
+    scores = []
+    labels = []
+    trend = []
+    prev_score = None
+
+    # 日期归一化：sentiment 返回的 trade_date 可能是 YYYYMMDD，统一转 YYYY-MM-DD
+    def _today():
+        d = s.get("trade_date") or datetime.now().strftime("%Y-%m-%d")
+        if len(d) == 8 and "-" not in d:
+            d = f"{d[:4]}-{d[4:6]}-{d[6:8]}"
+        return d
+
+    # Task 17：将任意 score 值安全转换为 0~100 的 int，异常兜底 50
+    def _to_score(v):
+        try:
+            n = int(v)
+            if n < 0 or n > 100:
+                return 50
+            return n
+        except (TypeError, ValueError):
+            try:
+                n = int(float(v))
+                if n < 0 or n > 100:
+                    return 50
+                return n
+            except (TypeError, ValueError):
+                return 50
+
     try:
-        # 复用 emotion_trend(20) 当日缓存（后台 warmup 已预热），取末尾15日；多留几日给切片余量
-        trend = emotion_history.get_emotion_trend(20)[-15:]
-        scores = [t["score"] for t in trend]
-        labels = [t["label"] for t in trend]
-        today_date = s.get("trade_date")
-        last_date = trend[-1].get("date") if trend else None
-        if last_date == today_date:
-            # trend 已含当日，上一交易日取倒数第二个
-            prev_score = scores[-2] if len(scores) >= 2 else None
-        else:
-            # trend 末尾非当日（盘中 legu 历史未更新到当日），追加当日实时 score 到末尾
-            if today_date:
-                scores.append(s.get("score"))
-                labels.append(today_date[4:6] + "-" + today_date[6:8])
-            prev_score = scores[-2] if len(scores) >= 2 else None
-        # 严格约束为末尾 15 点，避免前端按 15 日渲染时出现冗余点
+        trend = emotion_history.get_emotion_trend(20)
+        if len(trend) < 3:
+            trend = emotion_history.get_emotion_trend(20, force=True)
+    except Exception:
+        trend = []
+    try:
+        if len(trend) < 1 and s.get("score") is not None:
+            today_date = _today()
+            today_label = today_date[5:]
+            trend = [{"date": today_date, "label": today_label, "score": _to_score(s["score"])}]
+        if len(trend) < 1:
+            today_date = _today()
+            today_label = today_date[5:]
+            trend = [{"date": today_date, "label": today_label, "score": 50}]
+        if s.get("score") is not None:
+            today_date = _today()
+            last_date = trend[-1].get("date", "") if trend else ""
+            if last_date != today_date:
+                today_label = today_date[5:]
+                trend.append({"date": today_date, "label": today_label, "score": _to_score(s["score"])})
+        # Task 17：scores 每个元素都强制 _to_score（兜底 int），杜绝字符串/None 进 series.data
+        scores = [_to_score(t.get("score", 50)) for t in trend]
+        labels = [t.get("label", t.get("date", "")[5:] if t.get("date") else "") for t in trend]
         if len(scores) > 15:
             scores = scores[-15:]
             labels = labels[-15:]
-        s["history_scores"] = scores
-        s["history_labels"] = labels
-        s["prev_score"] = prev_score
+        min_len = min(len(scores), len(labels))
+        scores = scores[:min_len]
+        labels = labels[:min_len]
+        today_date = _today()
+        last_date = trend[-1].get("date", "") if trend else ""
+        if last_date == today_date:
+            prev_score = scores[-2] if len(scores) >= 2 else None
+        else:
+            prev_score = scores[-2] if len(scores) >= 2 else None
     except Exception:
-        s["history_scores"] = []
-        s["history_labels"] = []
-        s["prev_score"] = None
+        today_date = _today()
+        today_label = today_date[5:]
+        scores = [50]
+        labels = [today_label]
+        prev_score = None
+    # 单点不可见修复：ECharts line 仅 1 个点不画线，复制为 2 个相同点画出水平短线
+    if len(scores) == 1:
+        scores = scores * 2
+        labels = labels * 2
+    # Task 17：返回前最后一道强制校验（兜底保险）
+    scores = [_to_score(v) for v in scores]
+    s["history_scores"] = scores
+    s["history_labels"] = labels
+    s["prev_score"] = prev_score
     return s
 
 
@@ -169,7 +222,8 @@ _GOLD_CACHE = {"ts": 0.0, "data": None}
 def api_gold():
     """综合黄金行情：伦敦金 / COMEX金 / AU9999 实时 + 伦敦金近30日历史。300秒缓存。"""
     now = time.time()
-    if _GOLD_CACHE["data"] and now - _GOLD_CACHE["ts"] < 300:
+    force = request.args.get("force") == "1"
+    if not force and _GOLD_CACHE["data"] and now - _GOLD_CACHE["ts"] < 300:
         return jsonify(_GOLD_CACHE["data"])
     data = gold.get_gold_overview(days=30)
     _GOLD_CACHE["ts"] = now
@@ -295,6 +349,7 @@ def api_emotion_trend():
         "promo_rate": [t["promo_rate"] for t in trend],
         "max_height": [t["max_height"] for t in trend],
         "levels": [t["level"] for t in trend],
+        "contributions": [t.get("contributions") or {} for t in trend],  # 每日五维度贡献度，前端 latest 条渲染条形图
         "indexes": indexes,
         "latest": trend[-1] if trend else None,
     })

@@ -70,7 +70,7 @@ a{color:var(--cyan)}
 .up{color:var(--red)} .down{color:var(--green)} .flat{color:var(--sub)}
 
 #chart{width:100%;height:380px}
-.note{font-size:12px;color:var(--dim);margin-top:6px}
+.note{font-size:12px;color:var(--dim);margin-top:6px;margin-bottom:4px}
 
 .tbl-wrap{max-height:520px;overflow-y:auto;border:1px solid var(--line);border-radius:9px}
 .tbl{width:100%;border-collapse:collapse;font-size:13px}
@@ -128,10 +128,10 @@ input[type=checkbox]{accent-color:var(--cyan);width:16px;height:16px}
 .dist-down{color:#00d68f;font-weight:600}
 .dist-bar{display:flex;height:18px;background:#0a1220;border:1px solid var(--line);border-radius:9px;overflow:hidden}
 .dist-seg{height:100%;transition:width .4s ease}
-.dist-seg.up{background:#ff4d5f}
-.dist-seg.down{background:#00d68f}
-.dist-divider{width:8px;height:100%;position:relative;overflow:hidden;margin:0 1px;flex:none}
-.dist-divider::before{content:"";position:absolute;inset:0;background:#8a96b5;transform:skewX(-45deg);width:3px;left:50%;margin-left:-1.5px}
+.dist-seg.up{background:#ff4d5f;clip-path:polygon(0 0,100% 0,calc(100% - 14px) 100%,0 100%)}
+.dist-seg.down{background:#00d68f;clip-path:polygon(14px 0,100% 0,100% 100%,0 100%)}
+.dist-divider{width:14px;height:100%;position:relative;overflow:hidden;margin:0 1px;flex:none}
+.dist-divider::before{content:"";position:absolute;inset:0;background:#8a96b5;transform:skewX(-45deg);width:7px;left:50%;margin-left:-3.5px}
 /* 整行K线图加高避免过扁；量能曲线图收窄避免“上实下空” */
 #index-kline-chart{height:430px}
 #liangneng-chart{height:250px}
@@ -215,6 +215,30 @@ input[type=checkbox]{accent-color:var(--cyan);width:16px;height:16px}
 .sent-level{font-size:16px;color:var(--amber);font-weight:700;margin-bottom:6px}
 .sent-dims{display:flex;flex-wrap:wrap;gap:6px}
 .dim{font-size:11.5px;background:rgba(124,92,255,.08);color:#a8b7ff;padding:3px 9px;border-radius:8px;border:1px solid rgba(124,92,255,.22);white-space:nowrap}
+
+/* 情绪分维度贡献度条形图 */
+.sent-contrib{margin-top:12px;display:flex;flex-direction:column;gap:6px}
+.contrib-row{display:flex;align-items:center;gap:8px;font-size:12px}
+.contrib-name{width:72px;color:#8ba0c9;flex-shrink:0}
+.contrib-track{flex:1;height:10px;background:#16203a;border-radius:5px;overflow:hidden}
+.contrib-bar{height:100%;border-radius:5px;transition:width .3s}
+.contrib-bar.pos{background:linear-gradient(90deg,#4d7cff,#00d68f)}
+.contrib-bar.neg{background:linear-gradient(90deg,#ff4d5f,#ff8a5c)}
+.contrib-val{width:48px;text-align:right;flex-shrink:0}
+.contrib-val.pos{color:#00d68f}
+.contrib-val.neg{color:#ff4d5f}
+
+/* 情绪等级说明卡片 */
+.lvl-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px}
+.lvl-card{padding:10px 12px;background:#16203a;border-radius:8px;border:1px solid #2a3550;transition:all .25s}
+.lvl-card.on{border-color:#00e5ff;box-shadow:0 0 0 1px #00e5ff,0 0 12px rgba(0,229,255,.35);background:#1a2a4a}
+.lvl-head{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px}
+.lvl-name{font-size:15px;font-weight:600;color:#c6d2ef}
+.lvl-card.on .lvl-name{color:#00e5ff}
+.lvl-range{font-size:11px;color:#8ba0c9;font-family:ui-monospace,monospace}
+.lvl-desc{font-size:12px;color:#8ba0c9;line-height:1.5;margin-bottom:4px}
+.lvl-advice{font-size:12px;color:#00d68f;line-height:1.5}
+.lvl-card.on .lvl-advice{color:#ffd700}
 
 /* ═══ 智能选股页 ═══ */
 
@@ -424,7 +448,7 @@ input[type=checkbox]{accent-color:var(--cyan);width:16px;height:16px}
 
 .boards-top10 {
   display:grid;
-  grid-template-columns: 1fr 1px 1fr;
+  grid-template-columns: 1fr 1fr;
   gap: 16px;
   align-items: start;
   position: relative;

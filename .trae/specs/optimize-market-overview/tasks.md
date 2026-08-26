@@ -22,16 +22,7 @@
     - 测试要求：
       - programmatic: 分别请求 /api/index_compare?days=15 / 30 / 60，dates 长度分别为 15 / 30 / 60，无多余或缺失；按钮点击后 hint 副标题同步
       - human-judgement: 切换档位后折线数据平滑更新，legend/tooltip 仍正常；窗口 resize 自适应
-  - [x] SubTask 17.3: 情绪 sent-card 简化（移除右列重复内容）+ 修复近15日情绪图空白 + 确保渐变可见
-    - templates/index.html：.sent-body 中删除或 display:none 掉 .sent-right（含 #ov-sent-change / #ov-sent-factors 两块）；.sent-body 改为两列布局（左 sent-left 300px 固定 / 中 sent-middle 占剩余 flex:1），右列留空时不扭曲
-    - static/app.js：renderOverviewSentiment 内部取消对 renderSentimentChange(s) 与 renderSentimentFactors(s) 的调用（保留函数定义，未来可能再加回）
-    - 修复 renderSentimentMini 的 ECharts yAxis 配置：type=value 的 Y 轴不得同时设置 data 数组（原代码同时设置 data 与 formatter，导致 axisLabel 被 data 覆盖而失效，图例文字甚至折线本身为空的潜在根因），改为仅依赖 min/max/interval + axisLabel formatter(yLabelMap[val]) 输出 6 刻度文字；其余 grid/tooltip/xAxis/splitArea 5 段冷暖渐变配置保留并验证 ECharts value axis 规范
-    - 若 history_scores 为空，保持降级提示文本且不抛异常
-    - 依赖：Task 13
-    - 关联 AC：后端≥1点时中部图可见折线 + 6刻度 + 渐变；控制台无红错
-    - 测试要求：
-      - programmatic: JS 控制台无错误；/api/overview 返回 history_scores.len≥1 时，ovSentMiniChart.getOption().series[0].data 长度与后端一致；yAxis.min=0 yAxis.max=100 interval=20
-      - human-judgement: 中部图肉眼可见蓝折线 + 圆点；Y 轴显示冰点/过冷/微冷/微热/过热/沸点 6 个文字刻度；背景 splitArea 渐变「上橙下冰，两端深中间浅」肉眼可辨
+  - [x] SubTask 17.3: ~~（已替换）原概览页情绪 sent-card 简化与迷你图修复，已由 Task 19 情绪页优化整体取代~~
   - [x] SubTask 17.4: 行业领涨领跌 Top10 卡样式升级对齐附件 行业领涨领跌top10.png
     - templates/index.html：该卡内部结构升级为左右两栏各自带独立小标题（左栏头「领涨 TOP10」红色、右栏头「领跌 TOP10」绿色）；两栏之间加一条竖向分隔线（border-right / 或外层 flex 的 gap + 中间子 div 垂直边框）
     - static/style.css：重写 .boards-top10 / .boards-bar-row.up / .boards-bar-row.down / .rank / .name / .pct / .bar.up / .bar.down 结构：第 1/2/3 名序号徽章更醒目（金/银/铜或红黄渐变 + 对应字体色加深），第 4~10 名普通深色徽章；行结构 flex 明确，使用 flex:0 0 固定的 rank/name/pct 宽与 bar-track flex:1，禁止换行错位；≤900px 响应式下两栏保持竖排
@@ -57,4 +48,62 @@
 - Task 17.4 依赖 Task 14（行业 Top10 卡已存在，但要对齐参考图）
 - Task 17.5 依赖 Task 15（黄金卡已存在，但口径与精度需修正）
 - Task 17.1/17.2/17.3/17.4/17.5 互相之间无直接依赖，可并行委派
+
+---
+
+# Tasks（Task 18 增量追加：2026-08-26 — 验证回归修复）
+
+## 文档定位
+Task 17 实施后进行 Verification，发现 2 项回归问题。本节追加 Task 18 的 2 个子任务用于修复，作为验证回归修复入口。
+
+- [x] Task 18: 验证回归修复（/api/gold force 参数 / 行业 Top10 grid 布局错位）
+  - [x] SubTask 18.1: /api/gold 接口补充 force=1 强制刷新支持（app.py）
+    - 现状：app.py:168-177 的 `/api/gold` 路由函数体内**未读取 force 查询参数**，导致 `?force=1` 无法强制跳过 300s 缓存，前端无法拉取最新黄金行情。其他接口（/api/overview、/api/index_compare、/api/market_distribution、/api/emotion_trend）均已实现 force 参数，唯独 /api/gold 缺失
+    - 修复：参照 `/api/overview` 实现，在 `/api/gold` 路由内补两行：
+      1. 在函数体首行 `now = time.time()` 后新增 `force = request.args.get("force") == "1"`
+      2. 将缓存判断条件由 `if _GOLD_CACHE["data"] and now - _GOLD_CACHE["ts"] < 300:` 改为 `if not force and _GOLD_CACHE["data"] and now - _GOLD_CACHE["ts"] < 300:`
+    - 依赖：Task 15（黄金卡已存在）
+    - 关联 Acceptance Criterion: `?force=1` 能跳过缓存返回最新数据；不传 force 时仍按 300s 缓存
+    - 测试要求：
+      - programmatic: 连续两次 curl `/api/gold?force=1`，第二次返回的 `history_xau` 末尾 close 值与第一次不同（或缓存未过期情况下 msg 字段一致但能证明 force 跳过了缓存判断分支）；py_compile app.py 通过
+      - human-judgement: 浏览器或前端调用 /api/gold?force=1 能立即看到最新行情
+  - [x] SubTask 18.2: 行业领涨领跌 Top10 卡 .boards-top10 grid 布局修复（style.css）
+    - 现状：style.css:425-431 的 `.boards-top10 { display:grid; grid-template-columns: 1fr 1px 1fr; gap:16px; align-items:start; position:relative; }` 配合仅有 2 个正常流子元素 `.boards-col` 时，按 CSS Grid 自动排布规则会把第 2 个 `.boards-col`（领跌栏）放入 1px 中间分隔列，导致右栏被压缩到 1px、右侧大块空白，分隔线位置连带错位（.boards-top10::before 的 left:50% 落不到两等栏正中）
+    - 修复（任选其一，推荐方案 1 最简）：
+      1. 将 `grid-template-columns` 由 `1fr 1px 1fr` 改为 `1fr 1fr`（分隔线完全交给 `::before`，避免空 1px 列与子元素自动流入）
+      2. 或保留 3 列模板，显式定位：`.boards-col:nth-child(1){grid-column:1} .boards-col:nth-child(2){grid-column:3}`
+    - 同时保留 `.boards-top10::before` 的 `left:50%; transform:translateX(-50%)` 实现竖分隔线居中
+    - 依赖：Task 17.4（行业 Top10 样式已对齐参考图）
+    - 关联 Acceptance Criterion: 左右两栏宽度相等（各 1fr）；竖分隔线落于两栏正中；领跌栏不再被压缩为 1px
+    - 测试要求：
+      - programmatic: 浏览器 DevTools 检查 `.boards-top10` 的 computed grid-template-columns；两个 `.boards-col` 的 offsetWidth 接近相等（差 ≤1px）
+      - human-judgement: 肉眼可见左右两栏对称，领跌栏内容完整可见，右侧无大块空白；竖分隔线位于两栏正中
+
+---
+
+# Tasks（Task 19 增量追加：2026-08-26 — 市场情绪页优化，原 optimize-market-sentiment 融入）
+
+## 文档定位
+原 `optimize-market-sentiment` spec 已剔除，其全部 4 项需求融入本 spec 作为 Task 19（含 SubTask 19.1~19.4），替换原 SubTask 17.3 的概览页情绪卡修复（17.3 已标替换删除）。
+
+- [x] Task 19: 市场情绪页优化（趋势图缓存 / 维度贡献度 / 等级说明 / 低点次日基准线）
+  - [x] SubTask 19.1: 情绪趋势图加载缓存优化
+    - 在 `core/emotion_history.py` 增加历史情绪结果本地缓存（按交易日 key 缓存）
+    - 在 `app.py` 的 `/api/emotion_trend` 优先读缓存，仅 force=1 时重新计算
+    - 验证同一天内切换时间窗口可秒级返回
+  - [x] SubTask 19.2: 情绪分维度贡献度可视化
+    - 在 `core/sentiment.py` 的 `get_sentiment` 返回值中增加各维度贡献度明细（涨停家数分/连板高度分/晋级率分/炸板率修正/跌停惩罚）
+    - 在 `templates/index.html` 情绪页情绪卡片中新增维度贡献度区域
+    - 在 `static/app.js` 实现水平条形图渲染各维度贡献度（正贡献蓝色、负贡献红色）
+    - 在 `static/style.css` 实现贡献度条形图样式
+  - [x] SubTask 19.3: 情绪等级说明卡片
+    - 在 `templates/index.html` 情绪页新增情绪等级说明区域
+    - 在 `static/app.js` 根据当前情绪等级高亮对应说明并展示操作建议
+    - 在 `static/style.css` 实现等级说明卡片样式
+  - [x] SubTask 19.4: 情绪低点次日表现图优化
+    - 在 `static/app.js` 的 `renderLowNext` 中增加「冰点次日平均涨幅」基准虚线标注
+    - 在 tooltip 中增加与平均涨幅的差值提示
+
+# Task Dependencies Updates（Task 19）
+- SubTask 19.1、19.2、19.3、19.4 互相独立，可并行
 

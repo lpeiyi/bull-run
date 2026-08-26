@@ -22,7 +22,6 @@ document.querySelectorAll(".tab").forEach((t) => {
     } else {
       stopOvAutoRefresh();
     }
-    if (t.dataset.page === "sentiment") { loadSentiment(); loadLowNext(); }
     if (t.dataset.page === "screener") loadScreener();
     if (t.dataset.page === "rules") loadScreenRules();
   });
@@ -39,6 +38,7 @@ function getTradeSession() {
   if (hm >= 555 && hm < 565) return "集合竞价";    // 9:15-9:25
   if (hm >= 570 && hm < 690) return "持续交易";    // 9:30-11:30
   if (hm >= 690 && hm < 780) return "午间休市";    // 11:30-13:00
+  if (hm >= 780 && hm < 897) return "持续交易";    // 13:00-14:57 下午持续交易
   if (hm >= 897 && hm < 900) return "收盘竞价";    // 14:57-15:00
   if (hm >= 900) return "已收盘";                  // 15:00 后
   return "休市";                                   // 其他（9:00-9:15、9:25-9:30）
@@ -48,6 +48,14 @@ function getTradeSession() {
 function isTradeSession() {
   const s = getTradeSession();
   return s === "集合竞价" || s === "持续交易" || s === "收盘竞价";
+}
+
+// Task 12：是否处于黄金交易时段
+// 简化判断：非周末（周一至周五）均视为黄金交易时段（伦敦金近 24 小时交易，
+// AU99.99 夜盘 20:00-02:30，纽约黄金有夜间盘）；周末返回 false
+function isGoldTradeSession() {
+  const dow = new Date().getDay();
+  return dow !== 0 && dow !== 6;
 }
 
 // 根据交易时段更新呼吸灯：交易时段绿色脉冲，非交易时段灰色
@@ -61,15 +69,41 @@ function updateLiveIndicator() {
   txt.textContent = session;
 }
 
-// 刷新成功后更新数据时间：交易时段显示"盘中"，非交易时段显示"盘后"
-function updateDataTime() {
-  const d = new Date();
-  const p = (n) => String(n).padStart(2, "0");
-  const dateStr = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
-  const timeStr = `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
-  const tag = isTradeSession() ? "盘中" : "盘后";
+// Task 15：记录上次刷新时间戳，用于渲染相对时间（xx前刷新）
+// 放在 tick() 首次调用之前声明，避免 temporal dead zone
+let lastRefreshTs = 0;
+
+// Task 15：渲染相对刷新时间，随 tick() 每秒累加更新
+// 规则：未刷新/刚刚刷新/N秒前/N分N秒前/N小时N分N秒前
+function renderRefreshAgo() {
+  let agoText;
+  if (lastRefreshTs === 0) {
+    agoText = "未刷新";
+  } else {
+    const diff = Date.now() - lastRefreshTs;
+    if (diff < 5000) {
+      agoText = "刚刚刷新";
+    } else if (diff < 60000) {
+      agoText = `${Math.floor(diff / 1000)}秒前刷新`;
+    } else if (diff < 3600000) {
+      const m = Math.floor(diff / 60000);
+      const s = Math.floor((diff % 60000) / 1000);
+      agoText = `${m}分${s}秒前刷新`;
+    } else {
+      const h = Math.floor(diff / 3600000);
+      const m = Math.floor((diff % 3600000) / 60000);
+      const s = Math.floor((diff % 60000) / 1000);
+      agoText = `${h}小时${m}分${s}秒前刷新`;
+    }
+  }
   const el = $("#data-time");
-  if (el) el.textContent = `DATA: ${dateStr} ${tag} · 刷新于 ${timeStr}`;
+  if (el) el.textContent = agoText;
+}
+
+// 刷新成功后更新数据时间：记录刷新时间戳并渲染相对时间
+function updateDataTime() {
+  lastRefreshTs = Date.now();
+  renderRefreshAgo();
 }
 
 // ── 时钟 ──────────────────────────────
@@ -78,32 +112,41 @@ function tick() {
   const p = (n) => String(n).padStart(2, "0");
   $("#clock").textContent = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
   updateLiveIndicator();
+  renderRefreshAgo();  // Task 15：相对刷新时间随时钟每秒更新
 }
 setInterval(tick, 1000); tick();
 
 // ═══ 市场概览（首页） ═══════════════════
-async function loadOverview(force) {
+async function loadOverview(force, skipSide = false) {
   try {
     const o = await fetch("/api/overview" + (force ? "?force=1" : "")).then((x) => x.json());
     renderIndexStrip(o);
-    renderOverviewSentiment(o.sentiment, o.trade_date);
+    // 修复 #4：提前渲染行业 Top10，避免后续 sentiment 异常导致其被跳过
+    renderBoardsTop10(o.boards || { industry: [], concept: [] }); // Task 14：行业领涨领跌 Top10
     // SubTask 12.3：5 张旧表格卡（炸板/跌停/板块/涨停梯队/热门概念）已从 overview-grid 移除，
     // 故注释以下 3 行调用；保留函数定义，供其他 Tab 或未来恢复使用。
     // renderZt(o.zt_pool || [], o.ladder || []);
     // renderZbDt(o.zb_pool || [], o.dt_pool || []);
     // renderBoards(o.boards || { industry: [], concept: [] });
-    renderBoardsTop10(o.boards || { industry: [], concept: [] }); // Task 14：行业领涨领跌 Top10
-    updateDataTime();      // 刷新成功后更新数据时间显示
-    startOvAutoRefresh();  // 启动交易时段指数自动刷新
+    // 修改2：sent-card 已从概览页移除，renderOverviewSentiment 调用已删除（函数定义保留）
   } catch (e) {
     console.error("概览加载失败", e);
   }
-  loadIndexKline();
-  loadLiangneng();
-  loadDistribution();     // 涨跌统计柱状图
-  loadWatch();            // 自选标的实时行情（迁移自原自选看板页）
-  loadGold();             // Task 15：综合黄金行情首次加载
-  loadIndexCompare();     // Task 16：指数走势对比曲线
+  // Task 8 修复 A：updateDataTime 移至 try/catch 之外，保证 #data-time 始终更新，
+  // 避免 renderOverviewSentiment 抛异常时 catch 捕获后 #data-time 停留 DATA: --
+  // Task 14 修复 B：startOvAutoRefresh 同样移出 try 块，保证 fetch 失败或渲染异常时定时器仍启动
+  updateDataTime();
+  startOvAutoRefresh();  // 启动交易时段指数自动刷新
+  if (!skipSide) {
+    loadIndexKline();
+    loadLiangneng();
+    loadDistribution();     // 涨跌统计柱状图
+    loadWatch();            // 自选标的实时行情（迁移自原自选看板页）
+    loadGold();             // Task 15：综合黄金行情首次加载
+    loadIndexCompare();     // Task 16：指数走势对比曲线
+    loadSentiment();     // 情绪专区随概览页加载（原情绪tab融入）
+    loadLowNext();       // 情绪低点次日表现随概览页加载
+  }
 }
 
 function renderIndexStrip(o) {
@@ -167,24 +210,81 @@ function renderOverviewSentiment(s, date) {
 // ── 情绪迷你走势图：已升级为大尺寸15日XY渐变图，带坐标轴和冷暖渐变背景 ──
 // 函数名保持不变（最小化 renderOverviewSentiment 适配），内部改渲染到 #ov-sent-big，找不到回退 #ov-sent-mini
 let ovSentMiniChart = null;
+let _sentMiniRetry = 0;    // 0 尺寸重试计数器（每次调用 renderSentimentMini 入口重置）
+let sentLatest = null;     // Task 17：情绪数据全局缓存，供 Tab 切换 Fallback 重建 / resize 用
+// ── 情绪迷你走势图：已升级为大尺寸15日XY渐变图 + 多层兜底永不空白 ──
+// 六层兜底：入口重置计数器 → scores 二次清洗 → rAF 6 次 + ResizeObserver 强制尺寸 →
+//           echarts try/catch → 6 次失败走 SVG polyline Fallback → Tab 切换重建
 function renderSentimentMini(s) {
-  const scores = s.history_scores || [];
-  const labels = s.history_labels || [];
+  // --- Task 17 加固层 1：每次调用先重置计数器，防止跨次调用累积
+  _sentMiniRetry = 0;
+  // --- Task 17 加固层 1.5：缓存最新数据，供 Tab 切换 / Fallback 重建复用
+  if (s) sentLatest = s;
+
+  const useScores = s ? (s.history_scores || []) : sentLatest ? (sentLatest.history_scores || []) : [];
+  const useLabels = s ? (s.history_labels || []) : sentLatest ? (sentLatest.history_labels || []) : [];
+  // --- Task 17 加固层 2：scores 二次清洗 Number（兜底 50），杜绝字符串/NaN/超范围
+  let scores = useScores.map((v) => {
+    const n = Number(v);
+    return Number.isFinite(n) && n >= 0 && n <= 100 ? n : 50;
+  });
+  let labels = useLabels.slice(0, scores.length);
+  // 兜底：极端场景 scores 空，给两个 50 让 Fallback 至少能画一条线
+  if (scores.length === 0) { scores = [50, 50]; labels = ["--", "--"]; }
+
   // 优先用新容器 #ov-sent-big，找不到回退旧 #ov-sent-mini
   const box = document.getElementById("ov-sent-big") || document.getElementById("ov-sent-mini");
   if (!box) return;
+
+  // --- Task 17 加固层 0：每次调用先清除旧 Fallback DOM，然后再走 ECharts 流程
+  const oldFb = box.querySelector(":scope > .sent-fallback");
+  if (oldFb) { try { oldFb.remove(); } catch (_) {} }
+
   if (!scores.length) {
     // 无历史数据时空态提示
-    if (ovSentMiniChart) { ovSentMiniChart.dispose(); ovSentMiniChart = null; }
+    if (ovSentMiniChart) { try { ovSentMiniChart.dispose(); } catch (_) {} ovSentMiniChart = null; }
     box.innerHTML = '<div style="height:100%;display:flex;align-items:center;justify-content:center;color:#5a6a8a;font-size:12px">暂无历史情绪数据</div>';
     return;
   }
-  box.innerHTML = "";
-  if (!ovSentMiniChart) ovSentMiniChart = echarts.init(box);
 
+  // 兜底显式宽度，避免父级 flex 未布局时宽度为 0
+  if (!box.style.width) box.style.width = "100%";
+
+  // --- Task 17 加固层 3：rAF 重试上限从 3 提至 6；关键次数强制 getBoundingClientRect + 一次性 ResizeObserver
+  if (box.offsetWidth === 0 || box.offsetHeight === 0) {
+    if (_sentMiniRetry < 6) {
+      _sentMiniRetry++;
+      // 第 1/3/6 次：强制 getBoundingClientRect 触发重排；如浏览器支持，附加一次性 ResizeObserver
+      if (_sentMiniRetry === 1 || _sentMiniRetry === 3 || _sentMiniRetry === 6) {
+        try { void box.getBoundingClientRect(); } catch (_) {}
+        if ("ResizeObserver" in window) {
+          try {
+            const ro = new ResizeObserver(() => {
+              try { ro.disconnect(); } catch (_) {}
+              // 尺寸就绪后，立即重新用缓存数据渲染（非 rAF 递归）
+              if (sentLatest) renderSentimentMini(sentLatest);
+            });
+            ro.observe(box);
+          } catch (_) {}
+        }
+      }
+      requestAnimationFrame(() => renderSentimentMini(null));
+    } else {
+      // --- Task 17 加固层 4：6 次后仍 0 尺寸 → 立刻走 SVG Fallback，绝不空白
+      _sentMiniRetry = 0;
+      renderSentFallback(box, scores, labels);
+    }
+    return;
+  }
+  _sentMiniRetry = 0;
+
+  // 任何非 early return 的场景：先 dispose 旧实例再清空 box
+  if (ovSentMiniChart) { try { ovSentMiniChart.dispose(); } catch (_) {} ovSentMiniChart = null; }
+  box.innerHTML = "";
   // Y轴 6 个刻度的 value→文案 映射
   const yLabelMap = { 0: "冰点", 20: "过冷", 40: "微冷", 60: "微热", 80: "过热", 100: "沸点" };
 
+  const smallData = scores.length < 3;
   const option = {
     backgroundColor: "transparent",
     tooltip: {
@@ -196,7 +296,6 @@ function renderSentimentMini(s) {
         return `<b>${labels[p.dataIndex] || ""}</b><br>${p.marker}情绪分：${p.value}`;
       },
     },
-    // 留足空间给 x/y 轴标签
     grid: { left: 60, right: 20, top: 20, bottom: 50 },
     xAxis: {
       type: "category",
@@ -204,48 +303,33 @@ function renderSentimentMini(s) {
       show: true,
       boundaryGap: false,
       axisLine: { lineStyle: { color: "#2a3550" } },
-      // X轴：15 个日期标签 MM-DD，颜色 #8a96b5，字号11，旋转30度防重叠
       axisLabel: { color: "#8a96b5", fontSize: 11, rotate: 30, interval: 0 },
       axisTick: { show: false },
     },
     yAxis: {
       type: "value",
-      min: 0,
-      max: 100,
-      interval: 20,
-      // axisLabel 按 value 映射到对应文案（冰点/过冷/微冷/微热/过热/沸点）
-      axisLabel: {
-        color: "#8a96b5",
-        fontSize: 11,
-        formatter: (val) => yLabelMap[val] || val,
-      },
+      min: 0, max: 100, interval: 20,
+      axisLabel: { color: "#8a96b5", fontSize: 11, formatter: (val) => yLabelMap[val] || val },
       splitLine: { lineStyle: { color: "#16203a" } },
-      // 5 段 splitArea 冷暖渐变背景：0-20、20-40、40-60、60-80、80-100
-      // 原则：中间向上下渐变由深到浅（下半部分冰蓝下深上浅，上半部分橙红上深下浅）
       splitArea: {
-        show: true,
+        show: !smallData,
         areaStyle: [
-          // 0-20：冰蓝最深（下深上浅）→ 上透明 下冰蓝
           { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
             { offset: 0, color: "rgba(0,229,255,0)" },
             { offset: 1, color: "rgba(0,152,255,.18)" },
           ]) },
-          // 20-40：冰蓝次深
           { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
             { offset: 0, color: "rgba(0,229,255,0)" },
             { offset: 1, color: "rgba(0,152,255,.10)" },
           ]) },
-          // 40-60：微冷微热过渡区，近中性
           { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
             { offset: 0, color: "rgba(0,229,255,.03)" },
             { offset: 1, color: "rgba(255,140,0,.03)" },
           ]) },
-          // 60-80：橙红次深（上深下浅）→ 上橙红深 下透明
           { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
             { offset: 0, color: "rgba(255,80,80,.10)" },
             { offset: 1, color: "rgba(255,140,0,0)" },
           ]) },
-          // 80-100：橙红最深
           { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
             { offset: 0, color: "rgba(255,80,80,.18)" },
             { offset: 1, color: "rgba(255,140,0,0)" },
@@ -254,11 +338,7 @@ function renderSentimentMini(s) {
       },
     },
     series: [{
-      type: "line",
-      data: scores,
-      smooth: true,
-      symbol: "circle",
-      symbolSize: 6,
+      type: "line", data: scores, smooth: true, symbol: "circle", symbolSize: 6,
       lineStyle: { width: 2.5, color: "#4d7cff" },
       itemStyle: { color: "#4d7cff", borderColor: "#0d1526", borderWidth: 1.5 },
       areaStyle: {
@@ -269,8 +349,131 @@ function renderSentimentMini(s) {
       },
     }],
   };
-  ovSentMiniChart.setOption(option, true);
-  ovSentMiniChart.resize();
+  // --- Task 17 加固层 5：echarts 操作 try/catch，失败立刻走 SVG Fallback，绝不空白
+  try {
+    ovSentMiniChart = echarts.init(box);
+    ovSentMiniChart.setOption(option, true);
+    ovSentMiniChart.resize();
+  } catch (e) {
+    console.warn("情绪走势图 ECharts 失败，进入 SVG Fallback", e);
+    if (ovSentMiniChart) { try { ovSentMiniChart.dispose(); } catch (_) {} ovSentMiniChart = null; }
+    try { box.innerHTML = ""; } catch (_) {}
+    renderSentFallback(box, scores, labels);
+  }
+}
+
+// ── Task 17 加固层 4/5：原生 SVG Fallback（ECharts 多次失败或 0 尺寸兜底，永不空白）────
+// 视觉尽量接近 ECharts：5 段冷暖渐变背景 + Y 6 刻度 + X 日期标签 + polyline 折线 + circle 圆点
+function renderSentFallback(box, scores, labels) {
+  const yLabelMap = { 0: "冰点", 20: "过冷", 40: "微冷", 60: "微热", 80: "过热", 100: "沸点" };
+  const n = scores.length;
+  if (!n) return;
+
+  // Fallback 容器：高 280px，宽度 100%，相对定位（刻度用绝对定位）
+  const fb = document.createElement("div");
+  fb.className = "sent-fallback";
+  fb.style.cssText = "position:relative;width:100%;height:280px;padding:10px 8px 40px 56px;box-sizing:border-box;";
+
+  // 5 段冷暖渐变背景（对应 splitArea 的 5 个区域）
+  const bands = [
+    "linear-gradient(180deg, rgba(0,229,255,0) 0%, rgba(0,152,255,.18) 100%)", // 0-20
+    "linear-gradient(180deg, rgba(0,229,255,0) 0%, rgba(0,152,255,.10) 100%)", // 20-40
+    "linear-gradient(180deg, rgba(0,229,255,.03) 0%, rgba(255,140,0,.03) 100%)", // 40-60
+    "linear-gradient(180deg, rgba(255,80,80,.10) 0%, rgba(255,140,0,0) 100%)", // 60-80
+    "linear-gradient(180deg, rgba(255,80,80,.18) 0%, rgba(255,140,0,0) 100%)", // 80-100
+  ];
+  const bandsWrap = document.createElement("div");
+  bandsWrap.style.cssText = "position:absolute;top:10px;left:56px;right:8px;bottom:40px;display:flex;flex-direction:column;";
+  bands.forEach((bg) => {
+    const b = document.createElement("div");
+    b.style.cssText = `flex:1;background:${bg};border-bottom:1px solid #16203a;`;
+    bandsWrap.appendChild(b);
+  });
+  fb.appendChild(bandsWrap);
+
+  // Y 轴刻度（6 个，左侧负偏移）
+  Object.keys(yLabelMap).forEach((yk) => {
+    const yv = Number(yk);
+    const row = document.createElement("div");
+    // 100 - yv 从 top 起，top=10px 处对应 100（沸点），bottom=40px 对应 0（冰点）
+    const topPercent = (100 - yv) / 100;
+    const plotTop = 10;
+    const plotBottom = 40;
+    const fbHeight = 280;
+    const plotH = fbHeight - plotTop - plotBottom;
+    row.style.cssText = `position:absolute;left:0;width:48px;top:${plotTop + plotH * topPercent}px;transform:translateY(-50%);text-align:right;padding-right:8px;color:#8a96b5;font-size:11px;line-height:1;`;
+    row.textContent = yLabelMap[yk];
+    fb.appendChild(row);
+  });
+
+  // X 轴日期标签（底部 rotate 30°）
+  const plotLeftPad = 56, plotRightPad = 8, plotBottomPad = 40;
+  labels.forEach((lb, i) => {
+    const tag = document.createElement("div");
+    const ratio = n === 1 ? 0 : i / (n - 1);
+    const leftPx = plotLeftPad + ratio * (fb.clientWidth ? fb.clientWidth - plotLeftPad - plotRightPad : 300);
+    tag.style.cssText = `position:absolute;bottom:18px;transform:translateX(-50%) rotate(-30deg);transform-origin:center top;color:#8a96b5;font-size:11px;white-space:nowrap;`;
+    // 用 CSS left 百分比更可靠（fb.clientWidth 在未插入 DOM 前为 0）
+    tag.style.left = `calc(${plotLeftPad}px + ${ratio * 100}% * (100% - ${plotLeftPad + plotRightPad}px) / 100%)`;
+    tag.textContent = lb;
+    fb.appendChild(tag);
+  });
+
+  // SVG polyline 折线 + circle 圆点
+  const svgNS = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(svgNS, "svg");
+  // svg 区域 = 绘图区（不含刻度 padding），用 left/top 绝对定位
+  svg.setAttribute("style", `position:absolute;left:${plotLeftPad}px;top:10px;right:${plotRightPad}px;bottom:${plotBottomPad}px;width:calc(100% - ${plotLeftPad + plotRightPad}px);height:${280 - 10 - plotBottomPad}px;`);
+  svg.setAttribute("preserveAspectRatio", "none");
+  svg.setAttribute("viewBox", "0 0 1000 230"); // 用 viewBox 归一化坐标
+
+  const plotW = 1000, plotH = 230;
+  const pts = scores.map((sc, i) => {
+    const x = n === 1 ? plotW / 2 : (i / (n - 1)) * plotW;
+    const y = (1 - sc / 100) * plotH;
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  });
+
+  // 折线下面积渐变填充（对应 ECharts 的 areaStyle）
+  const defs = document.createElementNS(svgNS, "defs");
+  const g = document.createElementNS(svgNS, "linearGradient");
+  g.setAttribute("id", "sentAreaFb");
+  g.setAttribute("x1", "0"); g.setAttribute("y1", "0"); g.setAttribute("x2", "0"); g.setAttribute("y2", "1");
+  const s1 = document.createElementNS(svgNS, "stop");
+  s1.setAttribute("offset", "0%"); s1.setAttribute("stop-color", "rgba(77,124,255,.30)");
+  const s2 = document.createElementNS(svgNS, "stop");
+  s2.setAttribute("offset", "100%"); s2.setAttribute("stop-color", "rgba(77,124,255,0)");
+  g.appendChild(s1); g.appendChild(s2); defs.appendChild(g); svg.appendChild(defs);
+
+  // 填充 polygon（折线 -> 底部 -> 起点）
+  const areaPts = pts.slice().concat([`${(n === 1 ? plotW / 2 : plotW).toFixed(1)},${plotH}`, `0,${plotH}`]);
+  const area = document.createElementNS(svgNS, "polygon");
+  area.setAttribute("points", areaPts.join(" "));
+  area.setAttribute("fill", "url(#sentAreaFb)");
+  svg.appendChild(area);
+
+  // 折线
+  const poly = document.createElementNS(svgNS, "polyline");
+  poly.setAttribute("points", pts.join(" "));
+  poly.setAttribute("fill", "none");
+  poly.setAttribute("stroke", "#4d7cff");
+  poly.setAttribute("stroke-width", "2.5");
+  svg.appendChild(poly);
+
+  // 圆点
+  scores.forEach((sc, i) => {
+    const x = n === 1 ? plotW / 2 : (i / (n - 1)) * plotW;
+    const y = (1 - sc / 100) * plotH;
+    const c = document.createElementNS(svgNS, "circle");
+    c.setAttribute("cx", x); c.setAttribute("cy", y); c.setAttribute("r", "4");
+    c.setAttribute("fill", "#4d7cff");
+    c.setAttribute("stroke", "#0d1526");
+    c.setAttribute("stroke-width", "1.5");
+    svg.appendChild(c);
+  });
+
+  fb.appendChild(svg);
+  box.appendChild(fb);
 }
 
 // ── 情绪变化方向：较昨日 ↑/↓/→ + 变化数值，红升绿降 ──
@@ -446,6 +649,12 @@ $("#ov-refresh").addEventListener("click", () => loadOverview(true));
 // ── 概览指数自动刷新 ──────────────────────
 let ovRefreshTimer = null;
 
+// 全卡自动刷新：双档定时器
+let ovFastTimer = null;
+let ovSlowTimer = null;
+let ovSlowCounter = 0;
+let ovCurrentCompareDays = 60;
+
 // 轻量刷新指数行情条：仅拉取 /api/overview 缓存数据并更新 #ov-indexes
 async function refreshIndexStrip() {
   // 非交易时段不刷新，避免无谓请求
@@ -459,20 +668,75 @@ async function refreshIndexStrip() {
   }
 }
 
-// 启动概览自动刷新：交易时段每 12 秒刷新指数行情条
+// 启动概览自动刷新：双档定时 + 分档刷新 + 非交易降频
 function startOvAutoRefresh() {
   stopOvAutoRefresh();
-  ovRefreshTimer = setInterval(refreshIndexStrip, 12000);
+  ovSlowCounter = 0;
+  if (isTradeSession()) {
+    // 交易时段：fast=60s 调 doFastRefresh（不调 loadGold，避免超 60s 上限），slow=300s 调 doSlowRefresh
+    ovFastTimer = setInterval(doFastRefresh, 60000);
+    ovSlowTimer = setInterval(doSlowRefresh, 300000);
+  } else if (isGoldTradeSession()) {
+    // Task 8/12：非 A 股交易时段但黄金在交易，fast=120s 让黄金按交易时间刷新，slow=600s
+    ovFastTimer = setInterval(doNonTradeFastRefresh, 120000);
+    ovSlowTimer = setInterval(doSlowRefresh, 600000);
+  } else {
+    // 周末：黄金也休市，仅 slow=600s
+    ovSlowTimer = setInterval(doSlowRefresh, 600000);
+  }
+  // Task 17：概览 Tab 重新显示后，50ms 让 flex 布局到位，再 resize 情绪图；
+  // 如果当前是 Fallback SVG 兜底（没有 canvas + 有 .sent-fallback），且 sentLatest 有缓存，
+  // 则立刻用 sentLatest 再渲染一次，让 ECharts 有第二次机会。
+  setTimeout(() => {
+    if (ovSentMiniChart) {
+      try { ovSentMiniChart.resize(); } catch (_) {}
+    }
+    if (sentLatest) {
+      const box = document.getElementById("ov-sent-big") || document.getElementById("ov-sent-mini");
+      if (box) {
+        const fb = box.querySelector(":scope > .sent-fallback");
+        if (fb && !box.querySelector(":scope canvas")) {
+          renderSentimentMini(sentLatest);
+        }
+      }
+    }
+  }, 50);
 }
 
 // 停止概览自动刷新（切换到其他页面时调用）
 function stopOvAutoRefresh() {
-  if (ovRefreshTimer) { clearInterval(ovRefreshTimer); ovRefreshTimer = null; }
+  if (ovFastTimer) { clearInterval(ovFastTimer); ovFastTimer = null; }
+  if (ovSlowTimer) { clearInterval(ovSlowTimer); ovSlowTimer = null; }
+  if (typeof ovRefreshTimer !== 'undefined' && ovRefreshTimer) { clearInterval(ovRefreshTimer); ovRefreshTimer = null; }
+}
+
+function doFastRefresh() {
+  loadOverview(false, true);
+  loadLiangneng();
+  loadDistribution();
+  loadWatch();
+}
+
+// Task 12：非交易时段轻量刷新——只调 loadGold(false) 让黄金每 120s 刷新一次
+function doNonTradeFastRefresh() {
+  loadGold(false);
+}
+
+function doSlowRefresh() {
+  ovSlowCounter += 1;
+  loadGold(false);
+  if (ovSlowCounter % 2 === 0) {
+    loadIndexCompare(ovCurrentCompareDays);
+  }
+  if (ovSlowCounter % 2 === 0) {
+    loadIndexKline();
+  }
 }
 
 // ═══ 指数走势对比 ══════════════════════
 let indexCompareChart = null;
 function loadIndexCompare(days=60) {
+  ovCurrentCompareDays = days;
   fetch("/api/index_compare?days="+days)
     .then(r=>r.json())
     .then(d=>{ renderIndexCompare(d, days); })
@@ -659,6 +923,30 @@ function renderLiangneng() {
 
 function buildIntradayOption(d) {
   const intra = d.intraday || [];
+  // 生成完整交易时段 242 个分钟刻度：
+  // 上午：9:30（570）~ 11:30（690）共 121 分钟
+  // 下午：13:00（780）~ 15:00（900）共 121 分钟
+  const xData = [];
+  // 上午段
+  for (let m = 570; m <= 690; m++) {
+    const hh = String(Math.floor(m / 60)).padStart(2, "0");
+    const mm = String(m % 60).padStart(2, "0");
+    xData.push(`${hh}:${mm}`);
+  }
+  // 下午段
+  for (let m = 780; m <= 900; m++) {
+    const hh = String(Math.floor(m / 60)).padStart(2, "0");
+    const mm = String(m % 60).padStart(2, "0");
+    xData.push(`${hh}:${mm}`);
+  }
+  // 构建时刻 -> 涨跌幅映射
+  const chgMap = Object.fromEntries(intra.map((x) => [x.time, x.chg]));
+  // series 数据：已有时刻填 Number(值)，未到/无数据时刻填 null（留白）
+  const seriesData = xData.map((t) => {
+    const v = chgMap[t];
+    return v != null ? Number(v) : null;
+  });
+
   return {
     backgroundColor: "transparent",
     tooltip: {
@@ -666,17 +954,19 @@ function buildIntradayOption(d) {
       textStyle: { color: "#c6d2ef", fontSize: 12 },
       formatter: (ps) => {
         const p = ps && ps[0];
-        return p && p.value != null ? `<b>${p.axisValue}</b><br>${p.marker}预测量能：${p.value}%` : "";
+        if (!p || p.value == null) return "";
+        const val = Array.isArray(p.value) ? p.value[1] : p.value;
+        if (val == null) return "";
+        return `<b>${p.axisValue}</b><br>${p.marker}预测量能：${val}%`;
       },
     },
     grid: { left: 52, right: 20, top: 26, bottom: 28 },
     xAxis: {
-      type: "category", data: intra.map((x) => x.time), boundaryGap: false,
-      max: "15:00",  // X 轴末尾固定到 15:00 收盘时间，确保完整交易时段范围
+      type: "category", data: xData, boundaryGap: false,
       axisLine: { lineStyle: { color: "#2a3550" } },
       axisLabel: {
         color: "#8ba0c9",
-        // 每 30 个点显示一个标签，并强制显示 15:00 收盘标签
+        // 每 30 个点一个标签（半小时刻度）+ 强制 15:00 标签
         interval: function (idx, val) { return idx % 30 === 0 || val === "15:00"; },
       },
     },
@@ -685,7 +975,11 @@ function buildIntradayOption(d) {
       splitLine: { lineStyle: { color: "#16203a" } },
     },
     series: [{
-      name: "预测量能", type: "line", data: intra.map((x) => x.chg), smooth: true, symbol: "none",
+      name: "预测量能", type: "line",
+      data: seriesData,
+      smooth: false,          // 分时图用尖锐折线（传统分时感）
+      connectNulls: false,    // 午休 11:30 -> 13:00 之间断开不跨接
+      symbol: "none",
       lineStyle: { width: 2.5, color: "#ff9f43" },
       areaStyle: { color: new echarts.graphic.LinearGradient(0, 0, 0, 1,
         [{ offset: 0, color: "rgba(255,159,67,.32)" }, { offset: 1, color: "rgba(255,159,67,0)" }]) },
@@ -832,8 +1126,54 @@ async function loadSentiment(force) {
   $("#se-dims").innerHTML = [
     `涨停 ${s.zt_count}`, `跌停 ${s.dt_count}`, `炸板率 ${s.break_rate}%`, `晋级率 ${s.promo_rate}%`, `最高 ${s.max_height}板`,
   ].map((d) => `<span class="dim">${d}</span>`).join("");
+  renderContrib(s.contributions);
+  renderLevelGuide(s.level);
   lastTrend = t;
   renderEmotionChart(t);
+}
+
+// 渲染情绪分各维度贡献度（水平条形图，正贡献蓝色、负贡献红色）
+function renderContrib(c) {
+  const box = $("#se-contrib");
+  if (!box || !c) { if (box) box.innerHTML = ""; return; }
+  const order = ["涨停家数", "连板高度", "晋级率", "炸板率", "跌停惩罚"];
+  const maxAbs = Math.max(1, ...order.map((k) => Math.abs(c[k] || 0)));
+  box.innerHTML = order.map((k) => {
+    const v = c[k] || 0;
+    const pct = Math.min(100, Math.abs(v) / maxAbs * 100);
+    const cls = v >= 0 ? "pos" : "neg";
+    const sign = v > 0 ? "+" : "";
+    return `<div class="contrib-row">
+      <span class="contrib-name">${k}</span>
+      <div class="contrib-track">
+        <div class="contrib-bar ${cls}" style="width:${pct.toFixed(1)}%"></div>
+      </div>
+      <span class="contrib-val ${cls}">${sign}${v}</span>
+    </div>`;
+  }).join("");
+}
+
+// 情绪等级说明数据：名称 / 分数区间 / 描述 / 操作建议
+const LEVEL_GUIDE = [
+  { name: "冰点", range: "0-25", desc: "市场极度恐慌，涨停家数稀少，跌停家数增多", advice: "可关注情绪反转机会，分批低吸强势股" },
+  { name: "偏冷", range: "26-45", desc: "情绪低迷，赚钱效应较弱，炸板率偏高", advice: "谨慎操作，控制仓位，等待情绪回暖" },
+  { name: "正常", range: "46-65", desc: "情绪平稳，涨停家数适中，接力赚钱效应一般", advice: "正常仓位，跟随主线题材轮动" },
+  { name: "偏热", range: "66-80", desc: "情绪升温，涨停家数增多，连板高度抬升", advice: "可适度加仓，关注领涨龙头" },
+  { name: "过热", range: "81-100", desc: "情绪亢奋，涨停家数爆量，炸板率可能上升", advice: "注意风险，逢高减仓，警惕分歧" },
+];
+
+// 渲染情绪等级说明卡片，并高亮当前等级
+function renderLevelGuide(curLevel) {
+  const box = $("#se-levels");
+  if (!box) return;
+  box.innerHTML = LEVEL_GUIDE.map((lv) => {
+    const on = lv.name === curLevel ? " on" : "";
+    return `<div class="lvl-card${on}">
+      <div class="lvl-head"><span class="lvl-name">${lv.name}</span><span class="lvl-range">${lv.range}</span></div>
+      <div class="lvl-desc">${lv.desc}</div>
+      <div class="lvl-advice">${lv.advice}</div>
+    </div>`;
+  }).join("");
 }
 
 function renderEmotionChart(t) {
@@ -981,7 +1321,9 @@ function renderLowNext() {
         const it = items[ps[0].dataIndex];
         const sc = scores[ps[0].dataIndex];
         const ret = it.ret > 0 ? "+" + it.ret : it.ret;
-        return `<b>${fmtDate(it.date)}</b> 冰点(情绪${sc ?? "?"})<br>次日 ${fmtDate(it.next_date)}：${ret}%`;
+        const diff = st.avg != null ? it.ret - st.avg : null;
+        const diffStr = diff != null ? `<br>较平均(${st.avg}%)：${diff >= 0 ? "+" : ""}${diff.toFixed(2)}%` : "";
+        return `<b>${fmtDate(it.date)}</b> 冰点(情绪${sc ?? "?"})<br>次日 ${fmtDate(it.next_date)}：${ret}%${diffStr}`;
       },
     },
     grid: { left: 48, right: 20, top: 20, bottom: 40 },
@@ -990,6 +1332,13 @@ function renderLowNext() {
     series: [{
       type: "bar", data: items.map((it) => it.ret), barMaxWidth: 20,
       itemStyle: { color: (p) => (p.value >= 0 ? "#ff4d5f" : "#00d68f") },
+      // 冰点次日平均涨幅基准虚线
+      markLine: {
+        silent: true, symbol: "none",
+        label: { color: "#ffd700", fontSize: 11, position: "insideEndTop", formatter: () => `平均 ${st.avg}%` },
+        lineStyle: { color: "#ffd700", type: "dashed", width: 1.5 },
+        data: [{ yAxis: st.avg }],
+      },
     }],
   };
   if (!lowNextChart) lowNextChart = echarts.init(document.getElementById("low-next-chart"));
@@ -1240,7 +1589,6 @@ async function delWatch(code) {
   loadWatch();
 }
 
-$("#w-refresh").addEventListener("click", loadWatch);
 $("#w-add-btn").addEventListener("click", addWatch);
 // 回车键也可触发添加
 $("#w-add-input").addEventListener("keydown", (e) => { if (e.key === "Enter") addWatch(); });
@@ -1827,7 +2175,7 @@ function loadGold(force) {
     .then(r => r.json())
     .then(d => {
       renderGoldSpot(d.spot || []);
-      renderGoldHistory(d.history_xau || []);
+      renderGoldHistory(d.history_xau || [], d.history_source || "fallback_518880");
       const m = document.getElementById("gold-msg");
       if (m) { m.textContent = d.msg || ""; }
     })
@@ -1855,7 +2203,13 @@ function renderGoldSpot(spot) {
   }).join("");
 }
 
-function renderGoldHistory(hist) {
+function renderGoldHistory(hist, source) {
+  const labelEl = document.getElementById("gold-history-label");
+  if (labelEl) {
+    if (source === "XAUUSD") labelEl.textContent = "近30日 伦敦金 XAUUSD 走势（现货黄金，美元/盎司）";
+    else if (source === "518880xratio") labelEl.textContent = "近30日 伦敦金近似走势（518880 × 系数折算，非真实伦敦金数据，仅供参考）";
+    else labelEl.textContent = "近30日 黄金ETF 518880 走势（代理国内金价，非伦敦金 XAUUSD）";
+  }
   const box = document.getElementById("gold-history-chart");
   if (!box) return;
   if (!hist.length) {
@@ -1871,6 +2225,7 @@ function renderGoldHistory(hist) {
   const yMin = Math.floor(minV * 0.995 * 100) / 100;
   const yMax = Math.ceil(maxV * 1.005 * 100) / 100;
   const yInterval = Math.round((yMax - yMin) / 5 * 100) / 100;
+  const isXau = (source === "XAUUSD" || source === "518880xratio");
   goldHistoryChart.setOption({
     backgroundColor: "transparent",
     tooltip: {
@@ -1881,10 +2236,14 @@ function renderGoldHistory(hist) {
       formatter: ps => {
         const p = ps?.[0];
         if (!p) return '';
-        return `<b>${p.axisValue}</b><br>${p.marker}黄金ETF 518880 收盘：<span class="mono">${Number(p.value).toFixed(4)}</span> 元`;
+        if (isXau) {
+          return `<b>${p.axisValue}</b><br>${p.marker}伦敦金 XAUUSD 收盘：<span class="mono">${Number(p.value).toFixed(2)}</span> 美元/盎司`;
+        } else {
+          return `<b>${p.axisValue}</b><br>${p.marker}黄金ETF 518880 收盘：<span class="mono">${Number(p.value).toFixed(4)}</span> 元`;
+        }
       }
     },
-    grid: { left: 72, right: 20, top: 20, bottom: 40 },
+    grid: { left: 72, right: 20, top: 35, bottom: 40 },
     xAxis: {
       type: "category",
       data: dates,
@@ -1896,13 +2255,13 @@ function renderGoldHistory(hist) {
       min: yMin,
       max: yMax,
       interval: yInterval,
-      name: '收盘价（元）',
+      name: isXau ? '收盘价（美元/盎司）' : '收盘价（元）',
       nameLocation: 'end',
       nameTextStyle: { color: '#8a96b5' },
       axisLabel: {
         color: "#8a96b5",
         fontSize: 11,
-        formatter: v => Number(v).toFixed(3)
+        formatter: isXau ? (v => Number(v).toFixed(2)) : (v => Number(v).toFixed(3))
       },
       splitLine: { lineStyle: { color: "#1c2540" } }
     },

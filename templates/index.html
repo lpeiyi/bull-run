@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>牛来</title>
-<link rel="stylesheet" href="/static/style.css">
+<link rel="stylesheet" href="/static/style.css?v=20260826d">
 </head>
 <body>
 <div class="topbar">
@@ -12,7 +12,6 @@
   <div class="tabs">
     <div class="tab on" data-page="overview">市场概览</div>
     <div class="tab" data-page="screener">智能选股</div>
-    <div class="tab" data-page="sentiment">市场情绪</div>
     <div class="tab" data-page="rules">推送规则</div>
   </div>
   <div class="sp"></div>
@@ -100,37 +99,6 @@
     </div>
 
     <div class="overview-grid">
-      <div class="card sent-card">
-        <h3>市场情绪 <span class="hint mono" id="ov-date"></span></h3>
-        <div class="sent-body">
-          <!-- 左列：仪表盘 + 6格指标 + 解读提示 -->
-          <div class="sent-left">
-            <div class="sent-head">
-              <div class="sent-scorebox">
-                <div class="sent-score mono" id="ov-score">--</div>
-                <div class="sent-level" id="ov-level">--</div>
-              </div>
-              <div class="sent-gauge">
-                <div class="gauge-track"><div class="gauge-fill" id="ov-gauge"></div></div>
-                <div class="gauge-scale"><span>0 冰点</span><span>50 正常</span><span>100 过热</span></div>
-              </div>
-            </div>
-            <div class="sent-stats" id="ov-dims"></div>
-            <div class="tip" id="ov-tip">--</div>
-          </div>
-          <!-- 中列：近15日情绪大尺寸走势图 -->
-          <div class="sent-middle">
-            <div class="sent-title-sub">近15日情绪走势</div>
-            <div id="ov-sent-big" style="height:280px"></div>
-          </div>
-          <!-- 右列：变化方向 + 6因子徽章（SubTask 17.3 去重复，保留 DOM 但隐藏）
-          <div class="sent-right">
-            <div class="sent-change-box" id="ov-sent-change"></div>
-            <div class="sent-factors" id="ov-sent-factors"></div>
-          </div>
-          -->
-        </div>
-      </div>
       <!-- SubTask 12.2：已移除 5 张旧表格卡片（炸板/跌停/热点板块/涨停梯队/热门概念）-->
       <div class="card">
         <h3>行业领涨领跌 Top10 <span class="hint">左领涨红柱 · 右领跌绿柱，刻度统一可比</span></h3>
@@ -148,9 +116,59 @@
       <div class="card">
         <h3>综合黄金行情 <span class="hint">伦敦金 / COMEX金 / AU9999 <span id="gold-msg" class="hint" style="color:#ff8f99"></span></span></h3>
         <div class="gold-spot" id="gold-spot"></div>
-        <div class="note" id="gold-history-label">近30日黄金ETF 518880 走势（代理国内金价，非伦敦金 XAUUSD）</div>
+        <div class="note" id="gold-history-label">加载中...</div>
         <div id="gold-history-chart" style="height:240px"></div>
       </div>
+    </div>
+
+    <!-- ═══ 情绪专区（原市场情绪 tab 融入）═══ -->
+    <div class="card">
+      <h3>短线市场情绪 <span class="hint mono" id="se-date"></span></h3>
+      <div class="sent-row">
+        <div class="sent-score mono" id="se-score">--</div>
+        <div class="sent-meta">
+          <div class="sent-level" id="se-level">--</div>
+          <div class="sent-dims" id="se-dims"></div>
+        </div>
+      </div>
+      <div class="sent-contrib" id="se-contrib"></div>
+    </div>
+    <div class="card">
+      <h3>情绪等级说明 <span class="hint">当前等级会高亮显示</span></h3>
+      <div class="lvl-grid" id="se-levels"></div>
+    </div>
+    <div class="card">
+      <h3>情绪 × 指数走势 <span class="hint">指数按窗口首日=100%归一化，看情绪与指数是否共振</span></h3>
+      <div style="display:flex;align-items:flex-end;gap:16px;flex-wrap:wrap">
+        <div class="seg" id="se-range" style="margin-bottom:0">
+          <button class="seg-btn on" data-days="15">近15日</button>
+          <button class="seg-btn" data-days="60">近3月</button>
+          <button class="seg-btn" data-days="120">近半年</button>
+          <button class="seg-btn" data-days="250">近1年</button>
+          <button class="seg-btn" data-days="0">全部(2020至今)</button>
+        </div>
+        <div class="field">
+          <label>冰点阈值（≤，可改）</label>
+          <input id="ice-threshold" class="mono" type="number" value="30" min="0" max="100" style="min-width:80px">
+        </div>
+      </div>
+      <div id="emotion-chart" style="height:430px"></div>
+      <div class="note">情绪分（左轴 0~100，蓝色面积）｜涨停家数（副图柱状）｜指数归一化涨幅（右轴 %，图例可勾选叠加）。双击图例可只看单项。历史主因子（涨停/跌停/炸板率）取自乐咕乐股，近15日叠加东财连板高度与晋级率。</div>
+      <div style="text-align:right"><button class="btn ghost" id="se-refresh">重新计算（约30秒）</button></div>
+    </div>
+    <div class="card">
+      <h3>情绪低点 · 次日指数表现 <span class="hint" id="ln-hint">情绪分 ≤30（冰点）当日收盘 → 下一交易日收盘涨跌幅</span></h3>
+      <div class="seg" id="ln-days">
+        <button class="seg-btn" data-days="15">近15日</button>
+        <button class="seg-btn" data-days="60">近3月</button>
+        <button class="seg-btn" data-days="120">近半年</button>
+        <button class="seg-btn" data-days="250">近1年</button>
+        <button class="seg-btn on" data-days="0">全部(2020至今)</button>
+      </div>
+      <div class="seg" id="ln-range" style="margin-bottom:12px"></div>
+      <div class="stat-grid" id="ln-stats" style="margin-bottom:14px"></div>
+      <div id="low-next-chart" style="height:260px"></div>
+      <div class="note">每根柱子 = 一次冰点后的次日该指数涨跌幅（红涨绿跌）。样本取自上方所选时间窗口内的冰点日，基于各指数日K全量历史计算。</div>
     </div>
 
     <div class="card">
@@ -165,7 +183,6 @@
         <thead><tr><th>名称</th><th>代码</th><th class="num">现价</th><th class="num">涨跌幅</th><th class="num">成交额(亿)</th><th class="num">换手率</th><th>操作</th></tr></thead>
         <tbody id="w-tbody"></tbody>
       </table></div>
-      <div style="text-align:right;margin-top:12px"><button class="btn ghost" id="w-refresh">刷新行情</button></div>
     </div>
   </div>
 
@@ -462,53 +479,6 @@
     </div>
   </div>
 
-  <!-- ═══ 市场情绪 ═══ -->
-  <div class="page" id="page-sentiment">
-    <div class="card">
-      <h3>短线市场情绪 <span class="hint mono" id="se-date"></span></h3>
-      <div class="sent-row">
-        <div class="sent-score mono" id="se-score">--</div>
-        <div class="sent-meta">
-          <div class="sent-level" id="se-level">--</div>
-          <div class="sent-dims" id="se-dims"></div>
-        </div>
-      </div>
-    </div>
-    <div class="card">
-      <h3>情绪 × 指数走势 <span class="hint">指数按窗口首日=100%归一化，看情绪与指数是否共振</span></h3>
-      <div style="display:flex;align-items:flex-end;gap:16px;flex-wrap:wrap">
-        <div class="seg" id="se-range" style="margin-bottom:0">
-          <button class="seg-btn on" data-days="15">近15日</button>
-          <button class="seg-btn" data-days="60">近3月</button>
-          <button class="seg-btn" data-days="120">近半年</button>
-          <button class="seg-btn" data-days="250">近1年</button>
-          <button class="seg-btn" data-days="0">全部(2020至今)</button>
-        </div>
-        <div class="field">
-          <label>冰点阈值（≤，可改）</label>
-          <input id="ice-threshold" class="mono" type="number" value="30" min="0" max="100" style="min-width:80px">
-        </div>
-      </div>
-      <div id="emotion-chart" style="height:430px"></div>
-      <div class="note">情绪分（左轴 0~100，蓝色面积）｜涨停家数（副图柱状）｜指数归一化涨幅（右轴 %，图例可勾选叠加）。双击图例可只看单项。历史主因子（涨停/跌停/炸板率）取自乐咕乐股，近15日叠加东财连板高度与晋级率。</div>
-      <div style="text-align:right"><button class="btn ghost" id="se-refresh">重新计算（约30秒）</button></div>
-    </div>
-    <div class="card">
-      <h3>情绪低点 · 次日指数表现 <span class="hint" id="ln-hint">情绪分 ≤30（冰点）当日收盘 → 下一交易日收盘涨跌幅</span></h3>
-      <div class="seg" id="ln-days">
-        <button class="seg-btn" data-days="15">近15日</button>
-        <button class="seg-btn" data-days="60">近3月</button>
-        <button class="seg-btn" data-days="120">近半年</button>
-        <button class="seg-btn" data-days="250">近1年</button>
-        <button class="seg-btn on" data-days="0">全部(2020至今)</button>
-      </div>
-      <div class="seg" id="ln-range" style="margin-bottom:12px"></div>
-      <div class="stat-grid" id="ln-stats" style="margin-bottom:14px"></div>
-      <div id="low-next-chart" style="height:260px"></div>
-      <div class="note">每根柱子 = 一次冰点后的次日该指数涨跌幅（红涨绿跌）。样本取自上方所选时间窗口内的冰点日，基于各指数日K全量历史计算。</div>
-    </div>
-  </div>
-
   <!-- ═══ 推送规则 ═══ -->
   <div class="page" id="page-rules">
     <div class="card">
@@ -584,6 +554,6 @@
 </div>
 
 <script src="/static/echarts.min.js"></script>
-<script src="/static/app.js"></script>
+<script src="/static/app.js?v=20260826d"></script>
 </body>
 </html>

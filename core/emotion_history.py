@@ -21,48 +21,57 @@ _EM_WINDOW = 15
 
 def _compute_em_factors(days):
     """东财精确口径：逐日拉涨停/炸板池，得近 days 日的 {date: {max_height, promo_rate}}"""
-    from core.data import kline
-    df = kline("sh000001", days=days + 10)
-    dates = [d.strftime("%Y%m%d") for d in df["date"]][-(days + 1):]
-    prev_codes = set()
-    out = {}
-    for d in dates:
-        zt = sentiment._em_pool("getTopicZTPool", d)
-        zb = sentiment._em_pool("getTopicZBPool", d)
-        zt_codes = {p["c"] for p in zt}
-        zb_n = len(zb)
-        if not zt_codes and not zb_n:
-            continue  # 节假日或接口保留窗口外
-        max_h = max((p.get("lbc", 0) for p in zt), default=0)
-        promo = round(len(zt_codes & prev_codes) / len(prev_codes) * 100, 1) if prev_codes else 0.0
-        out[d] = {"max_height": max_h, "promo_rate": promo}
-        prev_codes = zt_codes
-    return out
+    try:
+        from core.data import kline
+        df = kline("sh000001", days=days + 10)
+        dates = [d.strftime("%Y%m%d") for d in df["date"]][-(days + 1):]
+        prev_codes = set()
+        out = {}
+        for d in dates:
+            try:
+                zt = sentiment._em_pool("getTopicZTPool", d)
+                zb = sentiment._em_pool("getTopicZBPool", d)
+            except Exception:
+                continue
+            zt_codes = {p["c"] for p in zt}
+            zb_n = len(zb)
+            if not zt_codes and not zb_n:
+                continue
+            max_h = max((p.get("lbc", 0) for p in zt), default=0)
+            promo = round(len(zt_codes & prev_codes) / len(prev_codes) * 100, 1) if prev_codes else 0.0
+            out[d] = {"max_height": max_h, "promo_rate": promo}
+            prev_codes = zt_codes
+        return out
+    except Exception:
+        return {}
 
 
 def _build_trend(rows, em_factors):
     """用乐咕骨架 + 东财近15日高度/晋级率，组装情绪序列"""
-    seq = []
-    for r in rows:
-        d = r["date"]
-        em = em_factors.get(d) or {}
-        height = em.get("max_height", 0)
-        promo = em.get("promo_rate", 0.0)
-        score, level = sentiment._calc_score(
-            r["zt_count"], r["dt_count"], height, promo, r["break_rate"])
-        seq.append({
+    try:
+        seq = []
+        for r in rows:
+            d = r["date"]
+            em = em_factors.get(d) or {}
+            height = em.get("max_height", 0)
+            promo = em.get("promo_rate", 0.0)
+            score, level, _contributions = sentiment._calc_score(
+                r["zt_count"], r["dt_count"], height, promo, r["break_rate"])
+            seq.append({
             "date": d,
             "label": f"{d[4:6]}-{d[6:8]}",
             "score": score, "level": level,
             "zt_count": r["zt_count"], "zb_count": r["zb_count"],
             "dt_count": r["dt_count"], "break_rate": r["break_rate"],
             "promo_rate": promo, "max_height": height,
+            "contributions": _contributions,  # 保留五维度贡献明细，供前端短线情绪卡片渲染条形图
         })
-    # 跨年时 label 补年份，避免混淆
-    if seq and seq[0]["date"][:4] != seq[-1]["date"][:4]:
-        for t in seq:
-            t["label"] = t["date"][:4] + "-" + t["date"][4:6]
-    return seq
+        if seq and seq[0]["date"][:4] != seq[-1]["date"][:4]:
+            for t in seq:
+                t["label"] = t["date"][:4] + "-" + t["date"][4:6]
+        return seq
+    except Exception:
+        return []
 
 
 def _load_cache():
@@ -83,29 +92,38 @@ def _save_cache(cache):
 
 
 def get_emotion_trend(days=15, force=False):
-    """近 days 个交易日的情绪序列；days<=0 表示全部历史。带当日缓存。"""
-    today = datetime.now().strftime("%Y-%m-%d")
-    cache = {} if force else _load_cache()
-    fresh = cache.get("generated") != today
+    """近 days 个交易日的情绪序列；days<=0 表示全部历史。
+    缓存策略：以自然日为 key，同一天内不同 days 的结果分别缓存；
+    force=1 或跨天时清空旧缓存重算，否则同一天切换窗口直接读缓存（秒级返回）。
+    """
+    try:
+        today = datetime.now().strftime("%Y-%m-%d")
+        cache = {} if force else _load_cache()
+        fresh = cache.get("generated") != today
 
-    if not fresh:
-        trend = (cache.get("trends") or {}).get(str(days))
-        if trend:
-            return trend
+        # 同一天内：优先读该 days 的缓存
+        if not fresh:
+            trend = (cache.get("trends") or {}).get(str(days))
+            if trend:
+                return trend
 
-    # 东财连板高度/晋级率：与 days 无关，当日只算一次
-    em_factors = cache.get("em_factors") if not fresh else None
-    if not em_factors:
-        em_factors = _compute_em_factors(_EM_WINDOW)
+        # 首次/强制/该 days 未缓存：重新计算
+        em_factors = cache.get("em_factors") if not fresh else None
+        if not em_factors:
+            em_factors = _compute_em_factors(_EM_WINDOW)
 
-    rows = legu.fetch_legu_history()
-    selected = rows if days <= 0 else rows[-days:]
-    trend = _build_trend(selected, em_factors)
+        rows = legu.fetch_legu_history()
+        selected = rows if days <= 0 else rows[-days:]
+        trend = _build_trend(selected, em_factors)
 
-    cache = {"generated": today, "em_factors": em_factors, "trends": {}}
-    cache["trends"][str(days)] = trend
-    _save_cache(cache)
-    return trend
+        # 更新缓存：fresh/force 时清空旧 trends（跨天数据过期）；否则保留其它 days 的缓存
+        if fresh or force:
+            cache = {"generated": today, "em_factors": em_factors, "trends": {}}
+        cache.setdefault("trends", {})[str(days)] = trend
+        _save_cache(cache)
+        return trend
+    except Exception:
+        return []
 
 
 def get_low_points(threshold=30, days=0):

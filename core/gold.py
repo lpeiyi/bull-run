@@ -22,11 +22,11 @@ UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
 _SESSION = requests.Session()
 _SESSION.headers.update({"User-Agent": UA, "Referer": "https://finance.sina.com.cn"})
 
-# 三品种定义：新浪代码、展示名、类型（hf=海外现货/期货，shfe=国内期货）
+# 三品种定义：新浪代码、展示名、类型（hf=海外现货/期货，shfe=国内期货，spot=国内现货）
 SPOTS = [
-    ("hf_XAU", "伦敦金 XAUUSD", "hf"),
-    ("hf_GC",  "COMEX黄金 GC",  "hf"),
-    ("AU0",    "沪金主连 AU0",  "shfe"),
+    ("hf_XAU",     "伦敦金 XAUUSD",     "hf"),
+    ("hf_GC",      "纽约黄金",          "hf"),
+    ("SGE_AU9999", "Au99.99 AU9999",   "spot"),
 ]
 
 
@@ -63,6 +63,7 @@ def get_gold_spot():
             payload = rest.split('"')[1] if '"' in rest else rest
             kv[key] = payload
 
+        fallback_msg = ""
         for symbol, default_name, stype in SPOTS:
             payload = kv.get(symbol)
             if not payload:
@@ -101,6 +102,24 @@ def get_gold_spot():
                     pct = round((price - last_close) / last_close * 100, 2)
                 else:
                     pct = 0.0
+            elif stype == "spot" and n >= 18:
+                # 上金所 Au99.99 SGE_AU9999（新浪 18 段，实采字段反推）：
+                # [0]代码[1]简称[2]标准名[3]最新价[4]?[5]昨收[6]今开[7]最高[8]最低[9-11]相关价格
+                # [12-15]量额[16]时间(YYYY-MM-DD HH:MM:SS)[17]涨跌幅(带%)
+                name = parts[2] or default_name
+                price = _float(parts[3])
+                last_close = _float(parts[5])
+                open_p = _float(parts[6])
+                high = _float(parts[7])
+                low = _float(parts[8])
+                # 优先按昨收重算 pct；若昨收为 0 则尝试从 17 段解析带 % 的字符串
+                if last_close and price:
+                    pct = round((price - last_close) / last_close * 100, 2)
+                else:
+                    try:
+                        pct = round(float(parts[17].rstrip("%")), 2)
+                    except (ValueError, IndexError):
+                        pct = 0.0
             else:
                 # 字段结构不匹配：跳过
                 continue
@@ -115,7 +134,38 @@ def get_gold_spot():
                 "open": open_p,
                 "last_close": last_close,
             })
-        return spot, ""
+
+        # AU0 兜底：若 spot 不足 3 条（通常是 SGE_AU9999 解析失败），追加沪金主连 AU0
+        if len(spot) < 3:
+            try:
+                au0_payload = kv.get("AU0")
+                if au0_payload:
+                    parts = au0_payload.split(",")
+                    n = len(parts)
+                    if n >= 28:
+                        name = parts[0] or "沪金主连 AU0（AU9999 接口不可用降级）"
+                        open_p = _float(parts[2])
+                        high = _float(parts[3])
+                        low = _float(parts[4])
+                        price = _float(parts[8])
+                        settle = _float(parts[10])
+                        candidates_last = [settle, _float(parts[7])]
+                        last_close = next((x for x in candidates_last if x > 100), 0.0)
+                        pct = round((price - last_close) / last_close * 100, 2) if last_close and price else 0.0
+                        spot.append({
+                            "symbol": "AU0",
+                            "name": name,
+                            "price": price,
+                            "pct": pct,
+                            "high": high,
+                            "low": low,
+                            "open": open_p,
+                            "last_close": last_close,
+                        })
+                        fallback_msg = "AU9999 接口不可用，降级为沪金主连 AU0"
+            except Exception:
+                fallback_msg = "AU9999 接口不可用，降级为沪金主连 AU0"
+        return spot, fallback_msg
     except Exception as e:
         return [], f"get_gold_spot: {type(e).__name__}:{e}"
 
@@ -147,19 +197,151 @@ def get_gold_history(days=30):
         return []
 
 
+def get_gold_history_xau(days=30):
+    """
+    获取伦敦金 XAUUSD 近 days 日历史收盘价。优先真实历史接口，失败走系数折算或 ETF 兜底。
+    返回 dict: {"source": str, "history": [{date, close}], "msg": str}
+    source ∈ {"XAUUSD", "518880xratio", "fallback_518880"}
+    history 升序 30 条；date YYYY-MM-DD；close XAUUSD 口径保留 2 位小数；fallback 口径仍保留原精度。
+    """
+    msg = ""
+    source = "fallback_518880"
+    history = []
+
+    # 1) 实采方案 A 的历史接口；若任一成功，直接返回 source=XAUUSD
+    plan_a_success = False
+    try:
+        ts = int(time.time() * 1000)
+        a_urls = [
+            f"https://stock2.finance.sina.com.cn/futures/api/jsonp.php/var%20t1_hf_XAU=/InnerFuturesNewService.getDailyKLine?symbol=hf_XAU&_={ts}",
+            "http://push2his.eastmoney.com/api/qt/stock/kline/get?secid=113.XAUUSD&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57&klt=101&fqt=0&end=20500101&lmt=" + str(days),
+            "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=hf_XAU,day,,," + str(days) + ",qfq",
+        ]
+        for url in a_urls:
+            try:
+                r = _SESSION.get(url, timeout=10)
+                r.encoding = "utf-8"
+                txt = r.text.strip()
+                if not txt or len(txt) < 50:
+                    continue
+                import json as _json
+                parsed = None
+                # 新浪 JSONP
+                if "InnerFuturesNewService" in url and "(" in txt and ")" in txt:
+                    inner = txt[txt.index("(") + 1:txt.rindex(")")]
+                    if inner and inner.lower() != "null":
+                        parsed = _json.loads(inner)
+                elif "push2his" in url:
+                    d = _json.loads(txt)
+                    data = d.get("data") if isinstance(d, dict) else None
+                    if data and isinstance(data, dict):
+                        klines = data.get("klines") or []
+                        if isinstance(klines, list) and len(klines) >= 10:
+                            out = []
+                            for k in klines:
+                                parts = k.split(",") if isinstance(k, str) else []
+                                if len(parts) >= 6:
+                                    ds = parts[0][:10]
+                                    close_v = _float(parts[2])
+                                    if close_v > 100:
+                                        out.append({"date": ds, "close": round(close_v, 2)})
+                            if len(out) >= 10:
+                                parsed = out[-days:]
+                elif "ifzq.gtimg.cn" in url:
+                    d = _json.loads(txt)
+                    data = d.get("data", {}) if isinstance(d, dict) else {}
+                    if isinstance(data, dict):
+                        for k, v in data.items():
+                            if isinstance(v, dict):
+                                day_data = v.get("day") or v.get("qfqday")
+                                if isinstance(day_data, list) and len(day_data) >= 10:
+                                    out = []
+                                    for row in day_data:
+                                        if isinstance(row, list) and len(row) >= 3:
+                                            ds = str(row[0])[:10]
+                                            close_v = _float(row[2])
+                                            if close_v > 100:
+                                                out.append({"date": ds, "close": round(close_v, 2)})
+                                    if len(out) >= 10:
+                                        parsed = out[-days:]
+                                        break
+                if isinstance(parsed, list) and len(parsed) >= 10:
+                    history = parsed[-days:]
+                    source = "XAUUSD"
+                    plan_a_success = True
+                    break
+            except Exception:
+                continue
+    except Exception:
+        plan_a_success = False
+
+    if plan_a_success:
+        return {"source": source, "history": history, "msg": msg}
+
+    # 2) 若 A 全失败，走 B：518880 × 系数折算
+    try:
+        spot_list, _ = get_gold_spot()
+        xau = next((s for s in spot_list if s["symbol"] == "hf_XAU"), None)
+        if xau and xau.get("last_close") and xau["last_close"] > 100:
+            etf_hist = get_gold_history(days=days + 1)
+            if isinstance(etf_hist, list) and len(etf_hist) >= 2:
+                etf_yesterday_close = etf_hist[-2]["close"]
+                if etf_yesterday_close > 0:
+                    xau_last_close = xau["last_close"]
+                    ratio = xau_last_close / etf_yesterday_close
+                    hist30 = etf_hist[-days:]
+                    history = []
+                    for h in hist30:
+                        history.append({
+                            "date": h["date"],
+                            "close": round(h["close"] * ratio, 2),
+                        })
+                    if len(history) >= 10:
+                        source = "518880xratio"
+                        msg += "伦敦金历史接口被反爬，采用 518880 × 每日系数折算，数值为近似估计"
+    except Exception:
+        pass
+
+    if source == "518880xratio":
+        return {"source": source, "history": history, "msg": msg}
+
+    # 3) 若 B 也失败，走 C：fallback_518880，复用 get_gold_history(days)
+    try:
+        history = get_gold_history(days)
+        source = "fallback_518880"
+        msg += "伦敦金历史 + 518880 系数折算均失败，兜底使用黄金ETF 518880 代理（人民币）"
+    except Exception:
+        history = []
+        source = "fallback_518880"
+        msg += "伦敦金历史 + 518880 系数折算均失败，兜底使用黄金ETF 518880 代理（人民币）"
+
+    return {"source": source, "history": history, "msg": msg}
+
+
 def get_gold_overview(days=30):
     """app.py 聚合用接口：spot + history_xau + 错误提示拼接。"""
     err1 = err2 = ""
     spot = []
+    hist_source = "fallback_518880"
     hist = []
     try:
         spot, err1 = get_gold_spot()
     except Exception as e:
         err1 = f"实时行情: {type(e).__name__}:{e}"
     try:
-        hist = get_gold_history(days)
+        xau_res = get_gold_history_xau(days)
+        hist_source = xau_res.get("source", "fallback_518880")
+        hist = xau_res.get("history", [])
+        if xau_res.get("msg"):
+            err2 = xau_res["msg"]
     except Exception as e:
-        err2 = f"历史数据: {type(e).__name__}:{e}"
+        err2 = f"XAUUSD历史失败({type(e).__name__}:{e})，已兜底 ETF 代理"
+        try:
+            hist = get_gold_history(days)
+            hist_source = "fallback_518880"
+        except Exception as e2:
+            hist = []
+            err2 += f"；ETF兜底也失败({type(e2).__name__}:{e2})"
     msg_parts = []
     if err1:
         msg_parts.append(err1)
@@ -168,6 +350,7 @@ def get_gold_overview(days=30):
     msg = "；".join(msg_parts)
     return {
         "spot": spot,
-        "history_xau": hist,  # 命名沿用：实际为 518880 黄金ETF走势，前端展示无需修改
+        "history_xau": hist,
+        "history_source": hist_source,
         "msg": msg,
     }
