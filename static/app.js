@@ -2,6 +2,16 @@
 const $ = (s) => document.querySelector(s);
 const fmt = (v, d = 2) => (v == null ? "--" : Number(v).toFixed(d));
 
+// HTML 转义：用于 innerHTML 模板中的用户可控字符串，防止 XSS 与渲染错位
+function escapeHtml(v) {
+  return String(v == null ? "" : v)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 function colorClass(v) {
   if (v > 0) return "up";
   if (v < 0) return "down";
