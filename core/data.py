@@ -82,7 +82,7 @@ def real_quotes(codes):
 
 # 新浪K线接口（前复权，稳定可靠，沪深京通用）
 _SINA_KLINE = "https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_MarketData.getKLineData"
-_SINA_KLINE_MAX = 1000  # 新浪单次最多约1000条
+_SINA_KLINE_MAX = 2000  # 实测可返回2000+条；2000条可覆盖2020年至今的全量日K（原1000仅到2022-07）
 
 
 def _parse_sina_kline(data_list):

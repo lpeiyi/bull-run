@@ -21,7 +21,7 @@
       "limit": 100,
       "sort_by": "mcap_yi",
       "push_time": "15:05",
-      "feishu_push": true
+      "feishu_push": false
     }
   },
   {
@@ -46,7 +46,7 @@
       "limit": 100,
       "sort_by": "mcap_yi",
       "push_time": "15:05",
-      "feishu_push": true
+      "feishu_push": false
     }
   },
   {

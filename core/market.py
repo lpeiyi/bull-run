@@ -3,6 +3,7 @@
 市场概览数据：多指数行情 + 涨停/炸板/跌停池明细 + 热点板块（全部免费源）
 指数/行情：腾讯（秒级）；涨停四池：东财；板块：新浪
 """
+import logging
 import os
 import time
 import random
@@ -136,7 +137,7 @@ def get_dt_pool(date):
 
 
 def get_boards():
-    """行业 + 概念板块，按平均涨幅降序。新浪主源失败时回退东财备用源。"""
+    """行业 + 概念板块，按平均涨幅降序。东财主源失败时回退新浪备用源。"""
     def _parse_sina(url):
         """新浪板块解析：返回 [] 表示拉取/解析失败。"""
         r = requests.get(url, headers={"User-Agent": UA}, timeout=12)
@@ -163,10 +164,11 @@ def get_boards():
 
     def _parse_em(fs_code):
         """东财板块解析：fs=m:90+t:2 行业、m:90+t:3 概念。
-        f3 为整数化涨跌幅(81 表示 0.81%)，需 /100 与新浪单位对齐。"""
+        f3 为整数化涨跌幅(81 表示 0.81%)，需 /100 与新浪单位对齐。
+        f6 为成交额，单位为元，/1e8 转成亿。"""
         url = "https://push2.eastmoney.com/api/qt/clist/get"
         params = {"pn": 1, "pz": 100, "po": 1, "np": 1,
-                  "fields": "f12,f14,f3", "fs": fs_code}
+                  "fields": "f12,f14,f3,f6", "fs": fs_code}
         try:
             r = requests.get(url, headers={"User-Agent": UA}, params=params, timeout=12)
             diff = (r.json().get("data") or {}).get("diff") or []
@@ -179,7 +181,7 @@ def get_boards():
                     "name": item["f14"],
                     "stock_count": 0,                # 东财该接口未返回成分股数
                     "avg_pct": round(float(item["f3"]) / 100, 2),
-                    "amount_yi": 0.0,                # 东财该接口未返回成交额
+                    "amount_yi": round(float(item.get("f6") or 0) / 1e8, 2),  # f6 单位为元，转亿
                     "leader_name": "",               # 东财该接口未返回领涨股
                     "leader_pct": 0.0,
                     "code": item["f12"],             # 板块代码，供扩展使用
@@ -188,17 +190,20 @@ def get_boards():
                 continue
         return rows
 
-    try:
-        ind = _parse_sina("https://money.finance.sina.com.cn/q/view/newSinaHy.php")
-        con = _parse_sina("https://money.finance.sina.com.cn/q/view/newFLJK.php?param=class")
-    except Exception:
-        ind, con = [], []
-
-    # 新浪任一源为空则用东财备用源兜底
+    # 东财为主源（板块指数涨跌幅，与东财网站口径一致）
+    ind = _parse_em("m:90+t:2")
+    con = _parse_em("m:90+t:3")
+    # 东财任一源为空则用新浪备用源兜底
     if not ind:
-        ind = _parse_em("m:90+t:2")
+        try:
+            ind = _parse_sina("https://money.finance.sina.com.cn/q/view/newSinaHy.php")
+        except Exception:
+            ind = []
     if not con:
-        con = _parse_em("m:90+t:3")
+        try:
+            con = _parse_sina("https://money.finance.sina.com.cn/q/view/newFLJK.php?param=class")
+        except Exception:
+            con = []
 
     ind.sort(key=lambda x: x["avg_pct"], reverse=True)
     con.sort(key=lambda x: x["avg_pct"], reverse=True)
@@ -228,6 +233,34 @@ def _em_index_amount(secid, days):
     return out
 
 
+def _sina_index_amount(code, days):
+    """新浪日K线获取指数成交量(亿股)，返回 [{date:'YYYY-MM-DD', volume_yi}] 升序
+
+    新浪K线对指数返回的 volume 字段是成交量(股)，非成交额(元)。
+    调用处需用本地缓存的 成交额/成交量 比率(约18-19元/股)转换为成交额(亿元)。
+    """
+    from core.data import kline
+    try:
+        df = kline(code, days=days + 10)
+    except Exception:
+        return []
+    if df is None or df.empty:
+        return []
+    out = []
+    for _, row in df.iterrows():
+        try:
+            vol = float(row.get("volume", 0))
+            if vol > 0:
+                d = row["date"]
+                if hasattr(d, "strftime"):
+                    d = d.strftime("%Y-%m-%d")
+                # 返回成交量(亿股)，调用处乘以均价转为成交额(亿元)
+                out.append({"date": d, "volume_yi": round(vol / 1e8, 4)})
+        except (ValueError, TypeError):
+            continue
+    return out
+
+
 def _trade_elapsed_ratio(now):
     """当前时刻已过交易时间占比（A股 9:30-11:30、13:00-15:00）。非交易时段返回 None"""
     if now.weekday() >= 5:
@@ -247,46 +280,78 @@ def _trade_elapsed_ratio(now):
     return min(max(elapsed / total, 0.001), 1.0)
 
 
-# A股典型分时量能分布权重（按 30 分钟一段，共 8 段，合计 1.0）
-# U 型曲线：开盘半小时与尾盘各约占 15%，上午其余约 35%，午后约 35%
-# 顺序：9:30-10:00, 10:00-10:30, 10:30-11:00, 11:00-11:30,
-#       13:00-13:30, 13:30-14:00, 14:00-14:30, 14:30-15:00
-_INTRADAY_SEG_WEIGHTS = (0.15, 0.13, 0.11, 0.11, 0.11, 0.11, 0.13, 0.15)
+# 开盘啦校准的分时累积权重锚点 [(elapsed_min, cum_weight)]
+# V5.1 用 8/28 真实腾讯分时 cum(e) × 截图目标 r(%) 反推：w = cum / (Y × (r/100+1))
+# 新增 (15, 0.2229) 锚点，保证 09:30-10:00 下探段曲线形状平滑；w 全程严格单调增
+_KPL_ANCHORS = [
+    (0,   0.0010),  # 保护点：避免除零
+    (1,   0.0354),  # 09:31 首分钟 反推 0.03541 → 目标 +17.94%
+    (5,   0.1061),  # 09:35        反推 0.10612 → 目标 +8.97%
+    (15,  0.2229),  # 09:45        反推 0.22289 → 目标 +4.50%
+    (30,  0.3305),  # 10:00        反推 0.33048 → 目标 +4.00%
+    (60,  0.4849),  # 10:30        反推 0.48489 → 目标 +1.00%
+    (120, 0.6729),  # 11:30        反推 0.67288 → 目标 -0.50%
+    (180, 0.8325),  # 14:00        反推 0.83254 → 目标 -3.00%
+    (240, 1.0000),  # 15:00 收盘约束 = 1.0（反推 1.00002，精度取整到 1.0）
+]
 
 
-def _intraday_cum_weight(elapsed_min):
-    """按 A股分时 U 型分布，返回已过 elapsed_min 分钟的累计量能占比(0~1)。
-    elapsed_min: 0~240；段内按线性插值。
+def _kpl_cum_weight(elapsed_min):
+    """KPL 校准的分时累积权重（预测专用；非真实成交量占比）。
+
+    返回值：float，夹在 [0.001, 1.000]；任意分钟在 _KPL_ANCHORS 之间做线性插值。
+    - elapsed_min <= 0 -> 0.001（避免除零）
+    - elapsed_min >= 240 -> 1.000（收盘 = 100%）
+    - 其他时间：在 _KPL_ANCHORS 上找相邻两点做线性插值
     """
-    if elapsed_min <= 0:
-        return 0.0
-    if elapsed_min >= 240:
-        return 1.0
-    seg = int(elapsed_min // 30)            # 0~7
-    offset = elapsed_min - seg * 30        # 段内偏移 0~30
-    cum = sum(_INTRADAY_SEG_WEIGHTS[:seg])
-    cum += _INTRADAY_SEG_WEIGHTS[seg] * (offset / 30.0)
-    return cum
+    if elapsed_min is None:
+        return 0.001
+    try:
+        e = int(elapsed_min)
+    except (ValueError, TypeError):
+        return 0.001
+    if e <= 0:
+        return 0.001
+    if e >= 240:
+        return 1.000
+    # 在 _KPL_ANCHORS 中定位上下界（数组已按 e 升序）
+    for i in range(1, len(_KPL_ANCHORS)):
+        e_lo, w_lo = _KPL_ANCHORS[i - 1]
+        e_hi, w_hi = _KPL_ANCHORS[i]
+        if e <= e_hi:
+            span = e_hi - e_lo
+            if span <= 0:
+                w = w_lo
+            else:
+                frac = (e - e_lo) / float(span)
+                w = w_lo + (w_hi - w_lo) * frac
+            return min(1.000, max(0.001, w))
+    # 理论不会走到（240 已在前面 return），兜底最后一个权重
+    return 1.000
 
 
-def _intraday_weight_ratio(now):
-    """当前时刻按 A股 U 型分时分布应完成的量能占比(0~1)。
-    非交易时段返回 None。用于替代线性时间占比做量能预测外推。
+def _elapsed_min_by_datetime(now):
+    """按 now.datetime 计算 A 股开盘以来整数分钟。
+
+    返回：
+    - None：周末 / 非交易时段（9:30 之前 / 15:00 之后）
+    - 1..120：上午 9:30-11:30；午休 11:30-13:00 返回 120（上午收盘位）
+    - 121..240：下午 13:01-15:00；恰好 15:00 返回 240
     """
+    if now is None:
+        return None
     if now.weekday() >= 5:
         return None
     t = now.hour * 60 + now.minute
-    if t < 9 * 60 + 30:
+    if t < 9 * 60 + 30:   # < 09:30
         return None
-    if t <= 11 * 60 + 30:
-        e = t - (9 * 60 + 30)              # 0~120
-    elif t < 13 * 60:
-        e = 120.0                          # 午休，上午已结束
-    elif t <= 15 * 60:
-        e = 120.0 + (t - 13 * 60)          # 120~240
-    else:
-        return None
-    return _intraday_cum_weight(e)
+    if t <= 11 * 60 + 30:  # 09:30 ~ 11:30
+        return t - (9 * 60 + 30)
+    if t < 13 * 60:         # 11:30 ~ 13:00（午休）
+        return 120
+    if t <= 15 * 60:        # 13:00 ~ 15:00
+        return 120 + (t - (13 * 60))
+    return 240               # > 15:00
 
 
 def _elapsed_min(t):
@@ -351,43 +416,111 @@ def get_liangneng(days=20):
     sz = _em_index_amount("0.399001", days)
     em = {}
     for r in sh + sz:
-        em[r["date"]] = em.get(r["date"], 0) + r["amount_yi"]
+        d = r["date"]
+        # 统一 date 格式为 YYYY-MM-DD（东财接口可能返回 YYYYMMDD）
+        if isinstance(d, str) and len(d) == 8 and "-" not in d:
+            d = f"{d[:4]}-{d[4:6]}-{d[6:8]}"
+        em[d] = em.get(d, 0) + r["amount_yi"]
 
+    # 实时成交额
     q = real_quotes(["sh000001", "sz399001"])
     actual = round(sum((q.get(c) or {}).get("amount_yi", 0) or 0
                        for c in ("sh000001", "sz399001")), 2)
 
-    # 交易日盘后：把当日全天成交额回填到本地缓存，供东财历史不可用时兜底
+    # 加载本地缓存（需在新浪合并前，用于计算成交量→成交额的转换比率）
     cache = _load_amount_cache()
     now = datetime.now()
+    # 交易日盘后：把当日全天成交额回填到本地缓存
     if now.weekday() < 5 and now.hour * 60 + now.minute >= 15 * 60 and actual > 0:
         cache[now.strftime("%Y-%m-%d")] = actual
         _save_amount_cache(cache)
+
+    # 新浪K线作为东财的补充源（东财被反爬时兜底）
+    # 新浪返回成交量(股)，需乘以均价(元/股)转换为成交额(元)
+    sina_sh = _sina_index_amount("sh000001", days)
+    sina_sz = _sina_index_amount("sz399001", days)
+    sina_vol = {}  # {date: 沪深合计成交量(亿股)}
+    for r in sina_sh + sina_sz:
+        d = r["date"]
+        sina_vol[d] = sina_vol.get(d, 0) + r["volume_yi"]
+    # 从本地缓存计算转换比率：找最近一个同时有缓存成交额和新浪成交量的日期
+    ratio = 18.0  # 默认均价(元/股)，A股约18-19元
+    for d in sorted(cache.keys(), reverse=True):
+        if d in sina_vol and sina_vol[d] > 0:
+            ratio = cache[d] / sina_vol[d]  # 亿元 / 亿股 = 元/股
+            break
+    # 补充em中缺失的日期（东财优先，新浪仅补缺）
+    for d, vol_yi in sina_vol.items():
+        if d not in em:
+            em[d] = round(vol_yi * ratio, 2)
 
     # 合并东财历史与本地缓存，得到近 days 日成交额序列（升序）
     merged = {}
     for d, v in em.items():
         merged[d] = round(v, 2)
     for d, v in cache.items():
-        merged[d] = round(v, 2)
-    # 交易日实时：把“今日”实际成交额并入，保证 rows[-1] 对齐今日、rows[-2] 对齐昨日
+        if d not in merged and isinstance(v, (int, float)):
+            merged[d] = round(v, 2)
+    # 交易日实时：把"今日"实际成交额并入，保证 rows[-1] 对齐今日、rows[-2] 对齐昨日
     if now.weekday() < 5 and actual > 0:
         merged[now.strftime("%Y-%m-%d")] = actual
-    rows = [{"date": d, "amount": v} for d, v in sorted(merged.items())][-days:]
+    # 至少取 40 天（保证回看窗口覆盖 1+ 个月交易日）
+    take_days = max(days, 40)
+    rows = [{"date": d, "amount": v} for d, v in sorted(merged.items())][-take_days:]
+    if len(rows) < 22:
+        logging.warning(
+            "get_liangneng: 历史柱子不足 22 根（当前 %d 根）。"
+            " 东财接口=%d 条，新浪=%d 条，本地缓存=%d 条。",
+            len(rows), len(em), len(sina_vol), len(cache))
 
     yesterday = rows[-2]["amount"] if len(rows) >= 2 else None
 
-    # 预测量能：盘中按 A股 U 型分时量能分布外推，盘后/非交易时段 = 实际值
-    w_ratio = _intraday_weight_ratio(now)
-    predict = round(actual / w_ratio, 2) if (w_ratio and 0 < w_ratio < 1) else actual
+    # 预测量能：盘中用 KPL 校准累积权重外推（对齐开盘啦 08-28 截图）
+    import math  # isinf / isnan 兜底
+    elapsed = _elapsed_min_by_datetime(now)
+    if elapsed is None or elapsed >= 240:
+        # 非交易 / 盘后：预测 = 实际，change_pct 直接算实际 vs 昨日
+        predict = actual
+        if yesterday and not math.isinf(yesterday) and not math.isnan(yesterday):
+            change_pct = round((actual / yesterday - 1) * 100, 2) if actual else None
+            if change_pct is not None and (math.isinf(change_pct) or math.isnan(change_pct)):
+                change_pct = None
+        else:
+            change_pct = None
+    else:
+        # 盘中：KPL 校准权重外推；分母 >= 0.001 不会除零
+        w_kpl = _kpl_cum_weight(elapsed)
+        try:
+            predict = round(actual / w_kpl, 2)
+        except (TypeError, ValueError, ZeroDivisionError):
+            predict = actual
+        if (not yesterday) or math.isinf(yesterday) or math.isnan(yesterday):
+            change_pct = None
+            predict = actual
+        else:
+            try:
+                change_pct = round((predict / yesterday - 1) * 100, 2)
+            except (TypeError, ValueError, ZeroDivisionError):
+                change_pct = None
+                predict = actual
+        # clamp + 非有限值兜底
+        if change_pct is None or math.isinf(change_pct) or math.isnan(change_pct):
+            change_pct = None
+            predict = actual
+        else:
+            change_pct = min(30.0, max(-30.0, float(change_pct)))
+            change_pct = round(change_pct, 2)
+    if predict is not None and yesterday is not None:
+        try:
+            change_abs = round(predict - yesterday, 2)
+        except (TypeError, ValueError):
+            change_abs = None
+    else:
+        change_abs = None
 
-    change_pct = round((predict / yesterday - 1) * 100, 2) if (predict and yesterday) else None
-    change_abs = round(predict - yesterday, 2) if (predict is not None and yesterday is not None) else None
-
-    # 分时预测量能曲线：每分钟按 U 型分时分布外推
-    # pred = 两市累计成交额 / 当前时刻应完成量能占比
+    # 分时预测量能曲线：KPL 校准权重；全程连续有值；±30% 硬 clamp
     intraday = []
-    if yesterday:
+    if yesterday and not math.isinf(yesterday) and not math.isnan(yesterday) and yesterday > 0:
         sh_min = _index_minute_cum("sh000001")
         sz_min = _index_minute_cum("sz399001")
         for t in sorted(set(sh_min) | set(sz_min)):
@@ -395,10 +528,25 @@ def get_liangneng(days=20):
             if e <= 0:
                 continue
             cum = (sh_min.get(t) or 0) + (sz_min.get(t) or 0)
-            w = _intraday_cum_weight(e)
-            pred = cum / w if w > 0 else cum
-            intraday.append({"time": f"{t[:2]}:{t[2:4]}",
-                             "chg": round((pred / yesterday - 1) * 100, 2)})
+            w_kpl = _kpl_cum_weight(e)
+            # 防止 w_kpl=0 极端（实际夹到了 0.001，这里再兜底）
+            if not w_kpl or w_kpl <= 0:
+                w_kpl = 0.001
+            pred = cum / w_kpl
+            # 计算 change_pct 并 clamp；极端情况 chg -> None 会让曲线断点，尽量都 clamp 成有效数字
+            try:
+                raw = (pred / yesterday - 1) * 100.0
+                if math.isinf(raw):
+                    chg = 30.0 if raw > 0 else -30.0
+                elif math.isnan(raw):
+                    # cum/yesterday 极端：把 pred/yesterday 视作 1（相对昨日 0%）
+                    chg = 0.0
+                else:
+                    chg = min(30.0, max(-30.0, raw))
+                chg = round(chg, 2)
+            except (TypeError, ValueError, ZeroDivisionError):
+                chg = 0.0  # 兜底保持曲线连续
+            intraday.append({"time": f"{t[:2]}:{t[2:4]}", "chg": chg})
 
     # 盘后(>=15:00)才补 15:00 收盘点；盘中不补，避免 ECharts 等距 X 轴把末端真实点拉到 15:00 处
     if intraday and intraday[-1]["time"] != "15:00" and now.hour * 60 + now.minute >= 900:

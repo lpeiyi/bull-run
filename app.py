@@ -209,7 +209,7 @@ def api_liangneng():
     now = time.time()
     if _LN_CACHE["data"] and now - _LN_CACHE["ts"] < 120:
         return jsonify(_LN_CACHE["data"])
-    data = market.get_liangneng()
+    data = market.get_liangneng(days=40)
     _LN_CACHE["ts"] = now
     _LN_CACHE["data"] = data
     return jsonify(data)

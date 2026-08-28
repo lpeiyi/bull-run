@@ -725,6 +725,7 @@ function doFastRefresh() {
   loadLiangneng();
   loadDistribution();
   loadWatch();
+  loadSentimentQuick();   // Task 2：短线情绪日内实时刷新（内部已含交易时段判断）
 }
 
 // Task 12：非交易时段轻量刷新——只调 loadGold(false) 让黄金每 120s 刷新一次
@@ -1140,6 +1141,30 @@ async function loadSentiment(force) {
   renderLevelGuide(s.level);
   lastTrend = t;
   renderEmotionChart(t);
+}
+
+// Task 2：日内定时刷新——只调无缓存的 /api/sentiment 实时接口，
+// 更新 情绪分/等级/维度/贡献条形图 四项 DOM，不重渲染 emotion-chart 走势大图，
+// 也不调 loadSentiment() 完整函数，避免与走势图/lastTrend 冲突。
+async function loadSentimentQuick() {
+  // 仅在 A 股交易时段刷新（集合竞价/持续交易/收盘竞价），午休与收盘后跳过
+  if (!isTradeSession()) return;
+  try {
+    const s = await fetch("/api/sentiment").then((r) => r.json());
+    if (!s || s.score == null) return;   // 数据不可用，静默退出，保留上次显示
+    // 情绪分 + 配色（与 loadSentiment 保持一致）
+    $("#se-score").textContent = s.score;
+    $("#se-score").style.color = s.score <= 45 ? "#00d68f" : s.score >= 80 ? "#ff4d5f" : "#00e5ff";
+    $("#se-level").textContent = s.level;
+    // 维度数据：涨停 / 跌停 / 炸板率 / 晋级率 / 最高连板
+    $("#se-dims").innerHTML = [
+      `涨停 ${s.zt_count}`, `跌停 ${s.dt_count}`, `炸板率 ${s.break_rate}%`, `晋级率 ${s.promo_rate}%`, `最高 ${s.max_height}板`,
+    ].map((d) => `<span class="dim">${d}</span>`).join("");
+    // 贡献度条形图
+    renderContrib(s.contributions);
+  } catch (e) {
+    console.error("情绪分快速刷新失败", e);
+  }
 }
 
 // 渲染情绪分各维度贡献度（水平条形图，正贡献蓝色、负贡献红色）
