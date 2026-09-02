@@ -1563,6 +1563,12 @@ function renderScreenRules(list, total) {
 
 $("#r-refresh-screen").addEventListener("click", loadScreenRules);
 
+// ═══ 自选标的K线弹窗 ═══════════════════
+let wkChart = null;
+let wkCode = "";
+let wkDays = 60;
+let wkName = "";
+
 // ═══ 自选看板 ══════════════════════════
 // 自选标的实时行情（已迁移到市场概览底部，不再显示大盘指数行情）
 async function loadWatch() {
@@ -1581,19 +1587,24 @@ function renderWatch(q) {
     return;
   }
   tb.innerHTML = CONFIG.watchlist.map((w) => {
-    // 删除按钮：data-code 用于定位要删除的标的
-    const del = `<td><button class="btn danger sm w-del" data-code="${w.code}">删除</button></td>`;
     const qq = q[w.code];
-    if (!qq) return `<tr><td>${w.name || w.code}</td><td class="mono">${w.code}</td><td colspan="4" style="color:#4d5d7d">数据缺失</td>${del}</tr>`;
-    return `<tr><td>${qq.name || w.name}</td><td class="mono">${w.code}</td>
+    const nm = qq ? (qq.name || w.name) : (w.name || w.code);
+    const btnKline = `<button class="btn ghost sm w-kline" data-code="${w.code}" data-name="${nm}">查看K线</button>`;
+    const btnDel = `<button class="btn danger sm w-del" data-code="${w.code}">删除</button>`;
+    const op = `<td>${btnKline}${btnDel}</td>`;
+    if (!qq) return `<tr><td>${nm}</td><td class="mono">${w.code}</td><td colspan="4" style="color:#4d5d7d">数据缺失</td>${op}</tr>`;
+    return `<tr><td>${nm}</td><td class="mono">${w.code}</td>
       <td class="num mono">${fmt(qq.price, 3)}</td>
       <td class="num mono ${colorClass(qq.change_pct)}">${qq.change_pct > 0 ? "+" : ""}${fmt(qq.change_pct)}%</td>
       <td class="num mono">${fmt(qq.amount_yi)}</td>
-      <td class="num mono">${fmt(qq.turnover_pct)}%</td>${del}</tr>`;
+      <td class="num mono">${fmt(qq.turnover_pct)}%</td>${op}</tr>`;
   }).join("");
-  // 绑定每行删除按钮事件
+  // 事件绑定（操作列两个按钮）
   tb.querySelectorAll(".w-del").forEach((b) =>
     b.addEventListener("click", () => delWatch(b.dataset.code))
+  );
+  tb.querySelectorAll(".w-kline").forEach((b) =>
+    b.addEventListener("click", () => openWatchKline(b.dataset.code, b.dataset.name))
   );
 }
 
@@ -1654,9 +1665,167 @@ async function delWatch(code) {
   loadWatch();
 }
 
+// 打开自选标的 K 线弹窗
+function openWatchKline(code, name) {
+  wkCode = code;
+  wkName = name;
+  wkDays = 60;
+  // 标题
+  const titleEl = document.querySelector("#wk-title h3");
+  if (titleEl) titleEl.textContent = `${name}（${code}）`;
+  // 档位重置为 60 日
+  document.querySelectorAll("#wk-range .seg-btn").forEach((x) => x.classList.remove("on"));
+  const def = document.querySelector('#wk-range .seg-btn[data-days="60"]');
+  if (def) def.classList.add("on");
+  // 显示 modal
+  const modal = document.getElementById("wk-modal");
+  if (modal) modal.classList.add("on");
+  // 图表初始化（等下一帧容器尺寸就绪）
+  requestAnimationFrame(() => {
+    if (!wkChart) {
+      const el = document.getElementById("watch-kline-chart");
+      if (el) wkChart = echarts.init(el);
+    }
+    wkChart && wkChart.resize();
+    loadWatchKline();
+  });
+}
+
+// 关闭自选 K 线弹窗
+function closeWatchKline() {
+  const modal = document.getElementById("wk-modal");
+  if (modal) modal.classList.remove("on");
+}
+
+// 请求接口并渲染
+async function loadWatchKline() {
+  try {
+    const d = await fetch(`/api/index_kline?code=${wkCode}&days=${wkDays}`).then((x) => x.json());
+    if (d.error) return;
+    renderWatchKline(d);
+  } catch (e) {
+    console.error("自选K线加载失败", e);
+  }
+}
+
+// 计算 KDJ 指标（9 日周期标准算法）
+// 入参 kline: [[开,收,低,高], ...]，每项对应一日
+// 返回 { K: [], D: [], J: [] }，长度与 kline 一致
+function calcKDJ(kline, n = 9) {
+  const K = [], D = [], J = [];
+  let prevK = 50, prevD = 50;  // K/D 初始值
+  for (let i = 0; i < kline.length; i++) {
+    // 取最近 n 日（不足 n 日则取 0~i）的最高价/最低价
+    const start = Math.max(0, i - n + 1);
+    let highN = -Infinity, lowN = Infinity;
+    for (let j = start; j <= i; j++) {
+      highN = Math.max(highN, kline[j][3]);  // 索引 3 = 高
+      lowN = Math.min(lowN, kline[j][2]);   // 索引 2 = 低
+    }
+    const close = kline[i][1];  // 索引 1 = 收
+    // RSV = (close - lowN) / (highN - lowN) * 100，除零保护返回 50
+    const rsv = highN > lowN ? (close - lowN) / (highN - lowN) * 100 : 50;
+    // K = 2/3 * prevK + 1/3 * RSV
+    const k = (2 / 3) * prevK + (1 / 3) * rsv;
+    // D = 2/3 * prevD + 1/3 * K
+    const d = (2 / 3) * prevD + (1 / 3) * k;
+    // J = 3*K - 2*D
+    const j = 3 * k - 2 * d;
+    K.push(k); D.push(d); J.push(j);
+    prevK = k; prevD = d;
+  }
+  return { K, D, J };
+}
+
+// 渲染自选 K 线图（基本复用 renderIndexKline）
+function renderWatchKline(d) {
+  if (!wkChart) return;
+  const kdj = calcKDJ(d.kline);  // 9 日周期 KDJ
+  const labels = d.dates.map((x) => x.slice(5)); // MM-DD
+  const volFmt = (v) => (v >= 1e8 ? (v / 1e8).toFixed(2) + "亿" : v >= 1e4 ? (v / 1e4).toFixed(1) + "万" : v);
+  const option = {
+    backgroundColor: "transparent",
+    tooltip: {
+      trigger: "axis", axisPointer: { type: "cross" }, backgroundColor: "#0d1226", borderColor: "#1c2540",
+      textStyle: { color: "#c6d2ef", fontSize: 12 },
+      formatter: (ps) => {
+        if (!ps.length) return "";
+        const i = ps[0].dataIndex;
+        const k = d.kline[i];
+        let s = `<b>${d.dates[i]}</b><br>开 ${k[0]}　收 ${k[1]}<br>低 ${k[2]}　高 ${k[3]}<br>`;
+        ps.forEach((p) => {
+          if (p.seriesName === "成交量") { if (p.value != null) s += `${p.marker}成交量：${volFmt(p.value)}<br>`; }
+          else if (p.seriesName.startsWith("MA") && p.value != null) s += `${p.marker}${p.seriesName}：${p.value}<br>`;
+          else if (p.seriesName === "K" || p.seriesName === "D" || p.seriesName === "J") { if (p.value != null) s += `${p.marker}${p.seriesName}：${Number(p.value).toFixed(2)}<br>`; }
+        });
+        return s;
+      },
+    },
+    legend: { data: ["MA5", "MA10", "MA20", "MA60", "MA120", "K", "D", "J"], textStyle: { color: "#8ba0c9" }, top: 0 },
+    grid: [
+      { left: 52, right: 20, top: 30, height: "50%" },
+      { left: 52, right: 20, top: "66%", height: "12%" },
+      { left: 52, right: 20, top: "82%", height: "12%" },
+    ],
+    xAxis: [
+      { type: "category", data: labels, gridIndex: 0, boundaryGap: true, axisLine: { lineStyle: { color: "#2a3550" } }, axisLabel: { color: "#8ba0c9" } },
+      { type: "category", data: labels, gridIndex: 1, boundaryGap: true, axisLine: { lineStyle: { color: "#2a3550" } }, axisLabel: { color: "#8ba0c9" } },
+      { type: "category", data: labels, gridIndex: 2, boundaryGap: true, axisLine: { lineStyle: { color: "#2a3550" } }, axisLabel: { color: "#8ba0c9" } },
+    ],
+    yAxis: [
+      { type: "value", gridIndex: 0, scale: true, splitLine: { lineStyle: { color: "#16203a" } }, axisLabel: { color: "#8ba0c9" } },
+      { type: "value", gridIndex: 1, splitNumber: 2, axisLabel: { color: "#8ba0c9", formatter: volFmt }, splitLine: { show: false } },
+      { type: "value", gridIndex: 2, scale: true, splitNumber: 2, axisLabel: { color: "#8ba0c9" }, splitLine: { show: false } },
+    ],
+    series: [
+      { name: "K线", type: "candlestick", data: d.kline,
+        itemStyle: { color: "#ff4d5f", color0: "#00d68f", borderColor: "#ff4d5f", borderColor0: "#00d68f" } },
+      { name: "MA5", type: "line", data: d.ma5, smooth: true, showSymbol: false, lineStyle: { width: 1 }, itemStyle: { color: "#ffd166" } },
+      { name: "MA10", type: "line", data: d.ma10, smooth: true, showSymbol: false, lineStyle: { width: 1 }, itemStyle: { color: "#00e5ff" } },
+      { name: "MA20", type: "line", data: d.ma20, smooth: true, showSymbol: false, lineStyle: { width: 1 }, itemStyle: { color: "#7c5cff" } },
+      { name: "MA60", type: "line", data: d.ma60, smooth: true, showSymbol: false, lineStyle: { width: 1 }, itemStyle: { color: "#ff6b6b" } },
+      { name: "MA120", type: "line", data: d.ma120, smooth: true, showSymbol: false, lineStyle: { width: 1 }, itemStyle: { color: "#4ecdc4" } },
+      { name: "成交量", type: "bar", xAxisIndex: 1, yAxisIndex: 1, data: d.volume, barMaxWidth: 12,
+        itemStyle: { color: (p) => (d.kline[p.dataIndex][1] >= d.kline[p.dataIndex][0] ? "rgba(255,77,95,.55)" : "rgba(0,214,143,.55)") } },
+      { name: "K", type: "line", data: kdj.K, xAxisIndex: 2, yAxisIndex: 2, smooth: true, showSymbol: false, lineStyle: { width: 1 }, itemStyle: { color: "#ffffff" } },
+      { name: "D", type: "line", data: kdj.D, xAxisIndex: 2, yAxisIndex: 2, smooth: true, showSymbol: false, lineStyle: { width: 1 }, itemStyle: { color: "#ffd166" } },
+      { name: "J", type: "line", data: kdj.J, xAxisIndex: 2, yAxisIndex: 2, smooth: true, showSymbol: false, lineStyle: { width: 1 }, itemStyle: { color: "#7c5cff" } },
+    ],
+  };
+  wkChart.setOption(option, true);
+  wkChart.resize();
+}
+
 $("#w-add-btn").addEventListener("click", addWatch);
 // 回车键也可触发添加
 $("#w-add-input").addEventListener("keydown", (e) => { if (e.key === "Enter") addWatch(); });
+// 自选 K 线弹窗：关闭（遮罩层点击）
+document.getElementById("wk-modal").addEventListener("click", (e) => {
+  if (e.target.id === "wk-modal") closeWatchKline();
+});
+// 自选 K 线弹窗：关闭（X 按钮）
+document.querySelectorAll(".wk-close").forEach((b) => {
+  b.addEventListener("click", closeWatchKline);
+});
+// 自选 K 线弹窗：关闭（ESC 键）
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" || e.keyCode === 27) closeWatchKline();
+});
+// 自选 K 线弹窗：档位切换
+document.querySelectorAll("#wk-range .seg-btn").forEach((b) => {
+  b.addEventListener("click", () => {
+    document.querySelectorAll("#wk-range .seg-btn").forEach((x) => x.classList.remove("on"));
+    b.classList.add("on");
+    wkDays = Number(b.dataset.days);
+    loadWatchKline();
+  });
+});
+// 自选 K 线弹窗：窗口变化自适应
+window.addEventListener("resize", () => {
+  if (wkChart && document.getElementById("wk-modal").classList.contains("on")) {
+    wkChart.resize();
+  }
+});
 
 // ═══ 选股页状态 ═══
 let SC_STRATEGIES = [];       // 所有策略

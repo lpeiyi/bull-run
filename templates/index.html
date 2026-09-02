@@ -440,6 +440,25 @@
 
 </div>
 
+  <!-- ═══ 自选标的K线弹窗 ═══ -->
+  <div class="modal-bg" id="wk-modal">
+    <div class="modal" style="width:960px;max-width:94vw">
+      <div id="wk-title">
+        <h3 style="margin:0">--（--）</h3>
+        <button class="wk-close" type="button" title="关闭">✕</button>
+      </div>
+      <div class="toolbar">
+        <div class="seg" id="wk-range">
+          <button class="seg-btn on" data-days="60">近60日</button>
+          <button class="seg-btn" data-days="120">近120日</button>
+          <button class="seg-btn" data-days="250">近250日</button>
+        </div>
+      </div>
+      <div id="watch-kline-chart"></div>
+      <div class="note">蜡烛图 + MA5/10/20/60/120 均线；下方副图为成交量。红涨绿跌。</div>
+    </div>
+  </div>
+
 <script src="/static/echarts.min.js"></script>
 <script src="/static/app.js?v=20260826d"></script>
 </body>
