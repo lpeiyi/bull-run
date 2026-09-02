@@ -123,9 +123,79 @@ def _fetch_sina_stock_list():
             "pe_ttm": _safe_float(item.get("per")),
             "mcap_yi": round(mktcap_wan / 1e4, 2),   # 万元 → 亿元
             "fmcap_yi": round(nmc_wan / 1e4, 2),
-            "industry": "",   # 新浪接口暂无行业字段
+            "industry": "",   # 新浪接口暂无行业字段，由 _industry_map() 补充
         })
     return out
+
+
+# ── 东财行业映射（补充新浪缺字段） ────────────────────────
+
+_INDUSTRY_MAP_FILE = os.path.join(_BASE, "data", "industry_map.json")
+_industry_map_cache = None   # 进程内缓存，避免重复读文件
+
+
+def _fetch_em_industry_map():
+    """从东财 clist 接口拉全 A 股列表，构建 {pure_code: industry_name} 映射。
+
+    东财 clist 接口 fs=m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23,m:0+t:81+s:2048
+    覆盖沪深京全 A 股；f100 为所属行业（东财行业分类）。
+    """
+    url = "http://push2.eastmoney.com/api/qt/clist/get"
+    # fs: 深主板+创业板+沪主板+科创板+北交所
+    fs = "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23,m:0+t:81+s:2048"
+    out = {}
+    page_size = 100
+    for page in range(1, 60):   # 上限保护，A股约 5500 只 / 100 ≈ 55 页
+        params = {"pn": page, "pz": page_size, "po": 1, "np": 1,
+                  "fields": "f12,f100", "fs": fs}
+        try:
+            r = _EM_SESSION.get(url, params=params, timeout=12)
+            diff = (r.json().get("data") or {}).get("diff") or []
+        except Exception:
+            break
+        if not diff:
+            break
+        for item in diff:
+            code = item.get("f12", "")
+            ind = item.get("f100", "")
+            if code and ind:
+                out[code] = ind
+        if len(diff) < page_size:
+            break
+    return out
+
+
+def _industry_map():
+    """惰性加载全市场个股 → 行业映射，缓存 24 小时。
+
+    首次调用时从东财拉取并写入 data/industry_map.json，后续直接读缓存。
+    返回 {pure_code: industry_name}；拉取失败时返回空 dict（前端显示 "--"）。
+    """
+    global _industry_map_cache
+    if _industry_map_cache is not None:
+        return _industry_map_cache
+
+    now = time.time()
+    # 尝试从缓存文件读（24h 有效）
+    if os.path.exists(_INDUSTRY_MAP_FILE):
+        try:
+            with open(_INDUSTRY_MAP_FILE, encoding="utf-8") as f:
+                d = json.load(f)
+            if now - d.get("ts", 0) < 24 * 3600:
+                _industry_map_cache = d.get("map", {})
+                return _industry_map_cache
+        except (OSError, ValueError):
+            pass
+
+    # 缓存过期或不存在，从东财拉取
+    m = _fetch_em_industry_map()
+    _industry_map_cache = m
+    try:
+        with open(_INDUSTRY_MAP_FILE, "w", encoding="utf-8") as f:
+            json.dump({"ts": now, "map": m}, f, ensure_ascii=False)
+    except OSError:
+        pass
+    return m
 
 
 # ── K 线缓存 ──────────────────────────────────────────
@@ -270,7 +340,9 @@ def run_screen(indicator_code, config=None):
                 "amount_yi": s.get("amount_yi", 0),
                 "turnover_pct": s.get("turnover_pct", 0),
                 "mcap_yi": s.get("mcap_yi", 0),
-                "industry": s.get("industry", ""),
+                "industry": s.get("industry", "")
+                    or _industry_map().get(s.get("pure_code", ""), "")
+                    or _industry_map().get(s.get("code", ""), ""),
             })
             if len(results) >= limit:
                 break
@@ -349,7 +421,9 @@ def start_screen_async(indicator_code, config=None):
                         "amount_yi": s.get("amount_yi", 0),
                         "turnover_pct": s.get("turnover_pct", 0),
                         "mcap_yi": s.get("mcap_yi", 0),
-                        "industry": s.get("industry", ""),
+                        "industry": s.get("industry", "")
+                            or _industry_map().get(s.get("pure_code", ""), "")
+                            or _industry_map().get(s.get("code", ""), ""),
                     })
                     if len(results) >= limit:
                         _SCREEN_STATE[task_id]["progress"] = total

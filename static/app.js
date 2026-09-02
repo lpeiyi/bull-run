@@ -18,6 +18,22 @@ function colorClass(v) {
   return "flat";
 }
 
+/**
+ * 解析 fetch 响应为 JSON，非 JSON / !ok 统一抛出可读错误，
+ * 避免 HTML 404/5xx 触发 SyntaxError: Unexpected token '<'
+ */
+async function safeJson(resp) {
+  const ct = resp.headers.get("content-type") || "";
+  if (!resp.ok || !ct.includes("application/json")) {
+    const txt = await resp.text().catch(() => "(无法读取响应体)");
+    const snippet = txt ? txt.slice(0, 120).replace(/\s+/g, " ") : "(空响应)";
+    throw new Error(
+      `HTTP ${resp.status} ${resp.statusText || ""}（服务器未返回合法 JSON，返回：${snippet}）`
+    );
+  }
+  return resp.json();
+}
+
 // ── Tab 切换 ───────────────────────────
 document.querySelectorAll(".tab").forEach((t) => {
   t.addEventListener("click", () => {
@@ -82,6 +98,7 @@ function updateLiveIndicator() {
 // Task 15：记录上次刷新时间戳，用于渲染相对时间（xx前刷新）
 // 放在 tick() 首次调用之前声明，避免 temporal dead zone
 let lastRefreshTs = 0;
+let sentRefreshTs = 0;  // 情绪卡片最近一次成功刷新时间戳
 
 // Task 15：渲染相对刷新时间，随 tick() 每秒累加更新
 // 规则：未刷新/刚刚刷新/N秒前/N分N秒前/N小时N分N秒前
@@ -1123,6 +1140,14 @@ let lastTrend = null;
 
 const fmtDate = (d) => (d ? `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}` : "");
 
+// 格式化刷新时间戳为 YYYY/M/D HH:MM:SS
+const fmtRefreshTime = (ts) => {
+  if (!ts) return "";
+  const d = new Date(ts);
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}/${d.getMonth() + 1}/${d.getDate()} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+};
+
 async function loadSentiment(force) {
   if (force) { $("#se-score").textContent = "…"; $("#se-level").textContent = "正在重新计算（首次约30~60秒）…"; }
   const qs = new URLSearchParams({ days: curDays });
@@ -1133,12 +1158,13 @@ async function loadSentiment(force) {
   $("#se-score").textContent = s.score;
   $("#se-score").style.color = s.score <= 45 ? "#00d68f" : s.score >= 80 ? "#ff4d5f" : "#00e5ff";
   $("#se-level").textContent = s.level;
-  $("#se-date").textContent = `近 ${t.labels.length} 个交易日 · 最新 ${fmtDate(s.date)}`;
+  sentRefreshTs = Date.now();
+  $("#se-date").textContent = `刷新于 ${fmtRefreshTime(sentRefreshTs)}`;
   $("#se-dims").innerHTML = [
     `涨停 ${s.zt_count}`, `跌停 ${s.dt_count}`, `炸板率 ${s.break_rate}%`, `晋级率 ${s.promo_rate}%`, `最高 ${s.max_height}板`,
   ].map((d) => `<span class="dim">${d}</span>`).join("");
   renderContrib(s.contributions);
-  renderLevelGuide(s.level);
+  renderLevelGuide(s.level, s.date);
   lastTrend = t;
   renderEmotionChart(t);
 }
@@ -1162,6 +1188,9 @@ async function loadSentimentQuick() {
     ].map((d) => `<span class="dim">${d}</span>`).join("");
     // 贡献度条形图
     renderContrib(s.contributions);
+    sentRefreshTs = Date.now();
+    $("#se-date").textContent = `刷新于 ${fmtRefreshTime(sentRefreshTs)}`;
+    // 等级说明卡片不随实时刷新更新，仅 loadSentiment() 调用时更新（对应前一个交易日）
   } catch (e) {
     console.error("情绪分快速刷新失败", e);
   }
@@ -1198,10 +1227,11 @@ const LEVEL_GUIDE = [
 ];
 
 // 渲染情绪等级说明卡片，并高亮当前等级
-function renderLevelGuide(curLevel) {
+function renderLevelGuide(curLevel, tradeDate) {
   const box = $("#se-levels");
   if (!box) return;
-  box.innerHTML = LEVEL_GUIDE.map((lv) => {
+  const dateHtml = tradeDate ? `<div class="lvl-date">基于 ${fmtDate(tradeDate)} 数据</div>` : "";
+  box.innerHTML = dateHtml + LEVEL_GUIDE.map((lv) => {
     const on = lv.name === curLevel ? " on" : "";
     return `<div class="lvl-card${on}">
       <div class="lvl-head"><span class="lvl-name">${lv.name}</span><span class="lvl-range">${lv.range}</span></div>
@@ -1471,7 +1501,7 @@ async function loadScreenRules() {
 function renderScreenRules(list, total) {
   const tb = $("#screen-rules-tbody");
   if (!list.length) {
-    tb.innerHTML = `<tr><td colspan="6" style="text-align:center;color:#4d5d7d">暂无选股推送，去「智能选股」页开启</td></tr>`;
+    tb.innerHTML = `<tr><td colspan="6" style="text-align:center;color:#4d5d7d">暂无选股推送，去「策略选股」页开启</td></tr>`;
     return;
   }
   tb.innerHTML = list.map((ind) => {
@@ -1512,7 +1542,7 @@ function renderScreenRules(list, total) {
   tb.querySelectorAll(".sr-del").forEach((b) => {
     b.addEventListener("click", async (e) => {
       const id = e.target.dataset.id;
-      if (!confirm("确定关闭这个选股推送吗？可在智能选股页重新开启。")) return;
+      if (!confirm("确定关闭这个选股推送吗？可在策略选股页重新开启。")) return;
       try {
         // 先获取当前指标的配置
         const indicators = await fetch("/api/indicators").then((r) => r.json());
@@ -1635,7 +1665,11 @@ let SC_CODE_EDIT = false;     // 代码编辑模式
 let SC_TASK_ID = null;
 let SC_POLL_TIMER = null;
 let SC_LAST_RESULTS = [];
-let scBtChart = null;
+// 按策略隔离的状态：结果缓存 + 选股任务（task_id / 轮询定时器），避免切换策略后串扰
+let SC_RESULTS_CACHE = {};   // { strategy_id: results_array }
+let SC_TASK_MAP = {};        // { strategy_id: { task_id, poll_timer } }
+// 后台选股任务的"最新进度快照"，切回正在运行的策略时立即恢复显示
+let SC_TASK_PROGRESS_CACHE = {};  // { strategy_id: { pct, progress, total, hits, estDays, status, error } }
 
 async function loadScreener() {
   if (SC_STRATEGIES.length === 0) {
@@ -1643,19 +1677,7 @@ async function loadScreener() {
   }
 }
 
-// ── Tab 切换 ──
-document.querySelectorAll(".sc-tab").forEach((tab) => {
-  tab.addEventListener("click", () => {
-    const target = tab.dataset.tab;
-    document.querySelectorAll(".sc-tab").forEach((t) => t.classList.toggle("active", t === tab));
-    document.querySelectorAll(".sc-tab-pane").forEach((p) => {
-      p.classList.toggle("active", p.dataset.pane === target);
-    });
-    if (target === "backtest" && scBtChart) {
-      setTimeout(() => scBtChart.resize(), 100);
-    }
-  });
-});
+// ── Tab 切换 ── (已移除：UI 已合并为单一视图)
 
 // ── 策略列表 ──
 async function loadStrategies() {
@@ -1665,7 +1687,6 @@ async function loadStrategies() {
     SC_STRATEGIES = [];
   }
   renderStrategyList();
-  renderBtStrategyOptions();
   if (SC_STRATEGIES.length > 0 && !SC_CURRENT_STRATEGY) {
     selectStrategy(SC_STRATEGIES[0].id);
   } else if (SC_STRATEGIES.length === 0) {
@@ -1707,25 +1728,59 @@ function renderStrategyList() {
           <div class="sc-strategy-item-desc">${escapeHtml(s.desc || "暂无描述")}</div>
         </div>
         ${clockIcon}
+        <button class="sc-strategy-del" data-id="${s.id}" title="删除策略">✕</button>
       </div>`;
   }).join("");
 
-  box.querySelectorAll(".sc-strategy-item").forEach((item) => {
-    item.addEventListener("click", () => selectStrategy(item.dataset.id));
-  });
+  // 容器级事件委托（一次性绑定，flag 防重注册）
+  if (!window.__sc_strategy_list_bound) {
+    $("#sc-strategy-list").addEventListener("click", onStrategyListClick);
+    window.__sc_strategy_list_bound = true;
+  }
+}
+
+// 策略列表点击委托：区分删除按钮与策略选中
+function onStrategyListClick(e) {
+  // 删除按钮：阻止冒泡，不触发 selectStrategy
+  const delBtn = e.target.closest(".sc-strategy-del");
+  if (delBtn) {
+    e.stopPropagation();
+    deleteStrategy(delBtn.dataset.id);
+    return;
+  }
+  // 策略项点击：选中
+  const item = e.target.closest(".sc-strategy-item");
+  if (item) selectStrategy(item.dataset.id);
+}
+
+// 删除策略：取消运行中的选股 task → 调用 DELETE 接口 → 清理缓存 → 重新加载
+function deleteStrategy(id) {
+  const s = SC_STRATEGIES.find((x) => x.id === id);
+  if (!s) return;
+  if (!confirm(`确定删除策略「${s.name}」吗？此操作不可撤销。`)) return;
+
+  // 若该策略正在选股，先取消其运行中的 task，避免后台孤儿任务
+  const task = SC_TASK_MAP[id];
+  if (task && task.task_id) {
+    fetch(`/api/screen/cancel/${task.task_id}`, { method: "POST" }).catch(() => {});
+    if (task.poll_timer) clearInterval(task.poll_timer);
+    delete SC_TASK_MAP[id];
+  }
+
+  fetch(`/api/indicators/${id}`, { method: "DELETE" })
+    .then((r) => r.json())
+    .then((data) => {
+      if (data.error) { alert("删除失败：" + data.error); return; }
+      // 清理结果缓存
+      delete SC_RESULTS_CACHE[id];
+      // 若删的是当前选中策略，置空以使 loadStrategies 后自动选中第一条
+      if (SC_CURRENT_STRATEGY === id) SC_CURRENT_STRATEGY = null;
+      loadStrategies();
+    })
+    .catch((e) => alert("删除失败：" + e));
 }
 
 $("#sc-strategy-search")?.addEventListener("input", renderStrategyList);
-
-function renderBtStrategyOptions() {
-  const group = $("#sc-bt-my-indicators");
-  if (!group) return;
-  const currentOpt = '<option value="current">使用当前策略</option>';
-  const customOpts = SC_STRATEGIES.map((s) =>
-    `<option value="ind_${s.id}">${escapeHtml(s.name)}</option>`
-  ).join("");
-  group.innerHTML = currentOpt + customOpts;
-}
 
 function clearStrategyView() {
   $("#sc-code").value = "";
@@ -1745,6 +1800,16 @@ function clearStrategyView() {
 function selectStrategy(id) {
   const s = SC_STRATEGIES.find((x) => x.id === id);
   if (!s) return;
+
+  // 切走旧策略时仅隐藏进度和按钮，后台 task 与轮询继续，不 cancel
+  if (SC_CURRENT_STRATEGY && SC_CURRENT_STRATEGY !== id) {
+    $("#sc-progress").style.display = "none";
+    resetScreenBtn();
+    SC_TASK_ID = null;
+    SC_POLL_TIMER = null;
+    // 注意：不调用 /api/screen/cancel；不 delete SC_TASK_MAP[oldId]；轮询仍在后台跑
+  }
+
   SC_CURRENT_STRATEGY = id;
   SC_CODE_EDIT = false;
 
@@ -1788,10 +1853,37 @@ function selectStrategy(id) {
   $("#sc-timer-options").style.display = timer.enabled ? "" : "none";
   $("#sc-push-time").value = timer.time || "15:05";
 
-  $("#sc-result-count").textContent = "--";
-  $("#sc-results tbody").innerHTML =
-    '<tr><td colspan="9" style="text-align:center;color:#4d5d7d">点击"立即选股"开始选股</td></tr>';
-  $("#sc-push-result").style.display = "none";
+  // —— 运行中策略恢复进度（优先级最高）——
+  const runningTask = SC_TASK_MAP[id];
+  if (runningTask && runningTask.task_id) {
+    const snap = SC_TASK_PROGRESS_CACHE[id] || { pct: 0, progress: 0, total: 0, hits: 0, estDays: 0 };
+    $("#sc-run-screen").style.display = "none";
+    $("#sc-cancel-screen").style.display = "";
+    $("#sc-progress").style.display = "";
+    $("#sc-progress-fill").style.width = snap.pct + "%";
+    const estDayStr = snap.estDays ? `（K线 ${snap.estDays} 天）` : "";
+    $("#sc-progress-text").textContent =
+      `已扫描 ${snap.progress} / ${snap.total} 只 · 命中 ${snap.hits} 只 ${estDayStr}`;
+    $("#sc-results tbody").innerHTML =
+      '<tr><td colspan="10" style="text-align:center;color:#4d5d7d">正在扫描股票池…（后台继续执行中）</td></tr>';
+    $("#sc-push-result").style.display = "none";
+    $("#sc-result-count").textContent = "--";
+    SC_LAST_RESULTS = [];
+    SC_TASK_ID = runningTask.task_id;
+    SC_POLL_TIMER = runningTask.poll_timer || null;
+  } else {
+    // 原有：从缓存恢复结果或显示空状态
+    const cached = SC_RESULTS_CACHE[id];
+    if (Array.isArray(cached)) {
+      renderScreenResults(cached, s.name);
+    } else {
+      SC_LAST_RESULTS = [];
+      $("#sc-result-count").textContent = "--";
+      $("#sc-results tbody").innerHTML =
+        '<tr><td colspan="10" style="text-align:center;color:#4d5d7d">点击"立即选股"开始选股</td></tr>';
+      $("#sc-push-result").style.display = "none";
+    }
+  }
 
   renderStrategyList();
 }
@@ -1812,6 +1904,14 @@ $("#sc-timer-enabled").addEventListener("change", (e) => {
 
 // ── 新建策略 ──
 $("#sc-new-strategy").addEventListener("click", () => {
+  // 新建策略时不 cancel 旧 task，仅隐藏进度 UI
+  if (SC_CURRENT_STRATEGY) {
+    $("#sc-progress").style.display = "none";
+    resetScreenBtn();
+    SC_TASK_ID = null;
+    SC_POLL_TIMER = null;
+  }
+
   SC_CURRENT_STRATEGY = null;
   SC_CODE_EDIT = true;
   $("#sc-code").value = "";
@@ -1835,7 +1935,7 @@ $("#sc-new-strategy").addEventListener("click", () => {
   $("#sc-push-result").style.display = "none";
 
   renderStrategyList();
-  document.querySelector('.sc-tab[data-tab="formula"]').click();
+  $("#sc-name")?.focus();
 });
 
 // ── 编辑代码 ──
@@ -1870,10 +1970,10 @@ $("#sc-check-syntax").addEventListener("click", async () => {
   const code = $("#sc-code").value;
   if (!code.trim()) { alert("代码不能为空"); return; }
   try {
-    const r = await fetch("/api/indicators/check-syntax", {
+    const r = await fetch("/api/indicators/check_syntax", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ code }),
-    }).then((x) => x.json());
+    }).then(safeJson);
     if (r.ok) {
       alert("✓ 语法检查通过");
     } else {
@@ -1884,39 +1984,20 @@ $("#sc-check-syntax").addEventListener("click", async () => {
   }
 });
 
-$("#sc-save-code").addEventListener("click", async () => {
+/**
+ * 统一保存策略：同时写入 name/desc/code + config
+ * 新建策略（SC_CURRENT_STRATEGY==null）走 POST，编辑走 PUT
+ */
+async function saveStrategy() {
   const code = $("#sc-code").value;
   const name = $("#sc-name").value.trim();
   const desc = $("#sc-desc").value.trim();
+
+  // —— 表单校验 ——
   if (!name) { alert("请填写策略名称"); return; }
   if (!code.trim()) { alert("代码不能为空"); return; }
 
-  let r;
-  if (SC_CURRENT_STRATEGY) {
-    r = await fetch(`/api/indicators/${SC_CURRENT_STRATEGY}`, {
-      method: "PUT", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, desc, code }),
-    }).then((x) => x.json());
-  } else {
-    r = await fetch("/api/indicators", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, desc, code }),
-    }).then((x) => x.json());
-  }
-
-  if (r.error) { alert("保存失败：" + r.error); return; }
-  await loadStrategies();
-  selectStrategy(r.id);
-  alert("保存成功");
-});
-
-// ── 保存配置 ──
-$("#sc-save-config-btn").addEventListener("click", async () => {
-  if (!SC_CURRENT_STRATEGY) {
-    alert("请先选择或创建一个策略");
-    return;
-  }
-
+  // —— 收集 config（与原 #sc-save-config-btn 的逻辑完全一致）——
   let scope;
   const preset = $("#sc-scope-preset").value;
   if (preset === "all") scope = ["all"];
@@ -1926,7 +2007,6 @@ $("#sc-save-config-btn").addEventListener("click", async () => {
       .map((cb) => cb.value);
     if (scope.length === 0) { alert("请至少选择一个板块"); return; }
   }
-
   const exclude = Array.from(
     document.querySelectorAll(".sc-config-wrap .sc-chk-grid input:checked")
   ).map((cb) => cb.value);
@@ -1944,15 +2024,41 @@ $("#sc-save-config-btn").addEventListener("click", async () => {
     },
   };
 
-  const r = await fetch(`/api/indicators/${SC_CURRENT_STRATEGY}`, {
-    method: "PUT", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ config }),
-  }).then((x) => x.json());
+  // —— 合并 body = name/desc/code + config ——
+  const payload = { name, desc, code, config };
+  const isNew = !SC_CURRENT_STRATEGY;
+  let r;
+  try {
+    if (isNew) {
+      r = await fetch("/api/indicators", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      }).then(safeJson);
+    } else {
+      r = await fetch(`/api/indicators/${SC_CURRENT_STRATEGY}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      }).then(safeJson);
+    }
+  } catch (e) {
+    alert("保存失败：" + e);
+    return;
+  }
 
   if (r.error) { alert("保存失败：" + r.error); return; }
+  SC_CODE_EDIT = false;
   await loadStrategies();
-  alert("配置已保存");
+  if (isNew) selectStrategy(r.id); // 新建后切到新策略
+  alert("保存成功");
+}
+
+$("#sc-save-code").addEventListener("click", async () => {
+  await saveStrategy();
 });
+
+// ── 保存配置 ── (原独立入口已移除，统一走 saveStrategy)
 
 $("#sc-reset-config").addEventListener("click", () => {
   if (SC_CURRENT_STRATEGY) {
@@ -1983,6 +2089,8 @@ $("#sc-run-screen").addEventListener("click", async () => {
     }).then((x) => x.json());
     if (r.error) { alert(r.error); resetScreenBtn(); return; }
     SC_TASK_ID = r.task_id;
+    // 记录到按策略隔离的任务表，便于切换策略时取消他人任务
+    SC_TASK_MAP[SC_CURRENT_STRATEGY] = { task_id: r.task_id, poll_timer: null };
     pollScreenProgress();
   } catch (e) {
     alert("选股启动失败: " + e);
@@ -1996,72 +2104,159 @@ function resetScreenBtn() {
 }
 
 $("#sc-cancel-screen").addEventListener("click", async () => {
-  if (!SC_TASK_ID) return;
-  await fetch(`/api/screen/cancel/${SC_TASK_ID}`, { method: "POST" });
+  // 取消当前策略的选股任务（按策略隔离）
+  const task = SC_TASK_MAP[SC_CURRENT_STRATEGY];
+  if (!task || !task.task_id) return;
+  await fetch(`/api/screen/cancel/${task.task_id}`, { method: "POST" });
 });
 
 function pollScreenProgress() {
-  if (SC_POLL_TIMER) clearInterval(SC_POLL_TIMER);
-  SC_POLL_TIMER = setInterval(async () => {
-    if (!SC_TASK_ID) { clearInterval(SC_POLL_TIMER); return; }
+  // 按策略隔离：捕获本次轮询所属策略，避免切换后进度/结果串扰
+  const sid = SC_CURRENT_STRATEGY;
+  const entry = SC_TASK_MAP[sid];
+  if (!entry || !entry.task_id) return;
+  if (entry.poll_timer) clearInterval(entry.poll_timer);
+  // 兼容旧别名（SC_TASK_ID / SC_POLL_TIMER 作为当前策略的快捷引用）
+  SC_TASK_ID = entry.task_id;
+  SC_POLL_TIMER = entry.poll_timer = setInterval(async () => {
+    const cur = SC_TASK_MAP[sid];
+    if (!cur || !cur.task_id) { if (cur?.poll_timer) clearInterval(cur.poll_timer); return; }
     try {
-      const st = await fetch(`/api/screen/state/${SC_TASK_ID}`).then((r) => r.json());
+      const st = await fetch(`/api/screen/state/${cur.task_id}`).then((r) => r.json());
       const pct = st.total ? Math.round(st.progress / st.total * 100) : 0;
-      $("#sc-progress-fill").style.width = pct + "%";
-      const estDays = st.est_days ? `（K线 ${st.est_days} 天）` : "";
-      $("#sc-progress-text").textContent =
-        `已扫描 ${st.progress || 0} / ${st.total || 0} 只 · 命中 ${st.results?.length || 0} 只 ${estDays}`;
+      const hits = st.results?.length || 0;
+      const estDays = st.est_days;
+      // 快照：供切回策略时立即还原进度 UI（无论 sid 是否为当前策略都写入）
+      SC_TASK_PROGRESS_CACHE[sid] = {
+        pct,
+        progress: st.progress || 0,
+        total: st.total || 0,
+        hits,
+        estDays: estDays || 0,
+        status: st.status,
+        error: st.error || null,
+      };
+      // 只有当前视图才更新 DOM
+      if (sid === SC_CURRENT_STRATEGY) {
+        $("#sc-progress-fill").style.width = pct + "%";
+        const estDaysStr = estDays ? `（K线 ${estDays} 天）` : "";
+        $("#sc-progress-text").textContent =
+          `已扫描 ${st.progress || 0} / ${st.total || 0} 只 · 命中 ${hits} 只 ${estDaysStr}`;
+      }
 
       if (st.status === "done") {
-        clearInterval(SC_POLL_TIMER);
-        SC_TASK_ID = null;
-        resetScreenBtn();
-        renderScreenResults(st.results || []);
-        $("#sc-progress").style.display = "none";
+        clearInterval(cur.poll_timer);
+        const results = st.results || [];
+        // 写入按策略结果缓存（不清空，支持 A→B→A 回到 A 时还原）
+        SC_RESULTS_CACHE[sid] = results;
+        delete SC_TASK_MAP[sid];
+        delete SC_TASK_PROGRESS_CACHE[sid];
+        if (sid === SC_CURRENT_STRATEGY) {
+          SC_TASK_ID = null;
+          SC_POLL_TIMER = null;
+          SC_LAST_RESULTS = results;
+          resetScreenBtn();
+          renderScreenResults(results, SC_STRATEGIES.find(x => x.id === sid)?.name);
+          $("#sc-progress").style.display = "none";
+        }
       } else if (st.status === "error") {
-        clearInterval(SC_POLL_TIMER);
-        SC_TASK_ID = null;
-        resetScreenBtn();
-        alert("选股失败: " + st.error);
-        $("#sc-progress").style.display = "none";
+        clearInterval(cur.poll_timer);
+        delete SC_TASK_MAP[sid];
+        delete SC_TASK_PROGRESS_CACHE[sid];
+        if (sid === SC_CURRENT_STRATEGY) {
+          SC_TASK_ID = null;
+          SC_POLL_TIMER = null;
+          resetScreenBtn();
+          alert("选股失败: " + st.error);
+          $("#sc-progress").style.display = "none";
+        }
       } else if (st.status === "cancelled") {
-        clearInterval(SC_POLL_TIMER);
-        SC_TASK_ID = null;
-        resetScreenBtn();
-        $("#sc-progress-text").textContent = "已取消";
-        setTimeout(() => { $("#sc-progress").style.display = "none"; }, 1500);
+        clearInterval(cur.poll_timer);
+        delete SC_TASK_MAP[sid];
+        delete SC_TASK_PROGRESS_CACHE[sid];
+        if (sid === SC_CURRENT_STRATEGY) {
+          SC_TASK_ID = null;
+          SC_POLL_TIMER = null;
+          resetScreenBtn();
+          $("#sc-progress-text").textContent = "已取消";
+          setTimeout(() => { $("#sc-progress").style.display = "none"; }, 1500);
+        }
       }
     } catch (e) {}
   }, 1500);
 }
 
-function renderScreenResults(results) {
+function renderScreenResults(results, strategyName) {
   SC_LAST_RESULTS = results;
   $("#sc-result-count").textContent = `命中 ${results.length} 只`;
   $("#sc-push-result").style.display = results.length > 0 ? "" : "none";
 
   if (!results.length) {
     $("#sc-results tbody").innerHTML =
-      '<tr><td colspan="9" style="text-align:center;color:#4d5d7d">暂无符合条件的股票</td></tr>';
+      '<tr><td colspan="10" style="text-align:center;color:#4d5d7d">暂无符合条件的股票</td></tr>';
     return;
   }
 
   const today = new Date().toLocaleDateString("zh-CN");
   $("#sc-results tbody").innerHTML = results.map((r) => {
-    const cls = r.change_pct > 0 ? "change-up" : r.change_pct < 0 ? "change-down" : "change-flat";
-    const sign = r.change_pct > 0 ? "+" : "";
+    const chg = (typeof r.change_pct === "number") ? r.change_pct : (Number(r.change) || 0);
+    const chgCls = chg >= 0 ? "chg-positive" : "chg-negative";
+    const sign = chg > 0 ? "+" : "";
+    const price = (typeof r.price === "number") ? r.price.toFixed(2) : "--";
+    const mcap = (typeof r.mcap_yi === "number") ? r.mcap_yi.toFixed(1)
+              : (typeof r.mcap === "number") ? r.mcap.toFixed(1) : "--";
+    const amountYi = (typeof r.amount_yi === "number") ? r.amount_yi.toFixed(2)
+                  : (typeof r.amount === "number") ? r.amount.toFixed(2) : "0.00";
+    const signalType = r.signalType || r.signal_type || strategyName || "--";
+    const timeVal = r.time || r.selected_at || today;
+    const industry = r.industry || "--";
+    const code = r.pure_code || r.code || "";
+    const name = r.name || "";
+    const nameSafe = (name + "").replace(/"/g, "&quot;");
     return `<tr>
-      <td class="mono">${r.code}</td>
-      <td>${r.name}</td>
-      <td class="num mono">${r.price.toFixed(2)}</td>
-      <td class="num mono ${cls}">${sign}${r.change_pct.toFixed(2)}%</td>
-      <td class="num mono">${r.mcap_yi.toFixed(1)}</td>
-      <td class="num mono">${(r.amount_yi || 0).toFixed(2)}</td>
-      <td>--</td>
-      <td class="mono" style="font-size:12px;color:var(--sub)">${today}</td>
-      <td>${r.industry || "--"}</td>
+      <td class="mono">${code}</td>
+      <td>${name}</td>
+      <td class="num mono">${price}</td>
+      <td class="num mono ${chgCls}">${sign}${chg.toFixed(2)}%</td>
+      <td class="num mono">${mcap}</td>
+      <td class="num mono">${amountYi}</td>
+      <td>${industry}</td>
+      <td>${signalType}</td>
+      <td class="mono" style="font-size:12px;color:var(--sub)">${timeVal}</td>
+      <td><button class="link-btn sc-backtest" data-symbol="${code}" data-name="${nameSafe}">回测</button></td>
     </tr>`;
   }).join("");
+}
+
+// 选股结果表操作列：事件委托（一次性绑定，避免 render 时重复注册）
+if (!window.__screen_backtest_bound) {
+  (function () {
+    const tb = document.querySelector("#sc-results tbody");
+    if (tb) tb.addEventListener("click", onScreenResultsBodyClick);
+  })();
+  window.__screen_backtest_bound = true;
+}
+
+function onScreenResultsBodyClick(e) {
+  const btn = e.target && e.target.closest && e.target.closest("button.sc-backtest");
+  if (!btn) return;
+  jumpToBacktest(btn.dataset.symbol, btn.dataset.name);
+}
+
+/**
+ * 选股结果 → 回测中心跳转。
+ * 契约：#?page=backtest-center&symbol=<code>&name=<urlencoded name>
+ * 优雅降级：若回测中心页不存在（无 #page-backtest-center DOM节点 / 无 window.goToBacktestCenter 函数），alert() 提示，不改变 hash。
+ */
+function jumpToBacktest(symbol, name) {
+  if (!symbol) { alert("无效标的代码"); return; }
+  const hasBacktestCenter = !!(document.querySelector("#page-backtest-center") || typeof window.goToBacktestCenter === "function");
+  if (!hasBacktestCenter) {
+    alert("回测中心暂未上线，敬请期待。");
+    return;
+  }
+  const qs = new URLSearchParams({ page: "backtest-center", symbol, name: name || "" });
+  location.hash = "?" + qs.toString();
 }
 
 // ── 推送飞书 ──
@@ -2073,14 +2268,14 @@ $("#sc-push-result").addEventListener("click", async () => {
   btn.disabled = true;
   try {
     const s = SC_STRATEGIES.find((x) => x.id === SC_CURRENT_STRATEGY);
-    const r = await fetch("/api/feishu/push-screen", {
+    const r = await fetch("/api/screen/push", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         indicator_id: SC_CURRENT_STRATEGY,
-        indicator_name: s?.name || "智能选股",
+        indicator_name: s?.name || "策略选股",
         results: SC_LAST_RESULTS,
       }),
-    }).then((x) => x.json());
+    }).then(safeJson);
     if (r.ok) {
       alert("推送成功");
     } else {
@@ -2093,114 +2288,6 @@ $("#sc-push-result").addEventListener("click", async () => {
     btn.disabled = false;
   }
 });
-
-// ── 回测 ──
-const BUILTIN_BT_INDICATORS = {
-  macd: "DIF:=EMA(C,12)-EMA(C,26);\nDEA:=EMA(DIF,9);\n买入信号:CROSS(DIF,DEA);",
-  kdj: "K:=KDJ.K;\nD:=KDJ.D;\n买入信号:CROSS(K,D);",
-  ma5_10: "MA5:=MA(C,5);\nMA10:=MA(C,10);\n买入信号:CROSS(MA5,MA10);",
-  ma20_60: "MA20:=MA(C,20);\nMA60:=MA(C,60);\n买入信号:CROSS(MA20,MA60);",
-  rsi: "RSI1:=RSI(C,14);\n买入信号:CROSS(RSI1,30);",
-  boll: "UPPER:=BOLL(20,2);\n买入信号:CROSS(C,UPPER);",
-};
-
-$("#sc-bt-run").addEventListener("click", async () => {
-  const indicator = $("#sc-bt-indicator").value;
-  let code;
-  if (indicator === "current") {
-    if (!SC_CURRENT_STRATEGY) { alert("请先选择一个策略"); return; }
-    const s = SC_STRATEGIES.find((x) => x.id === SC_CURRENT_STRATEGY);
-    code = s?.code || "";
-  } else if (indicator.startsWith("ind_")) {
-    const indId = indicator.substring(4);
-    const ind = SC_STRATEGIES.find((x) => x.id === indId);
-    if (!ind) { alert("找不到该策略"); return; }
-    code = ind.code;
-  } else {
-    code = BUILTIN_BT_INDICATORS[indicator];
-  }
-  if (!code.trim()) { alert("策略代码为空"); return; }
-
-  const pool = $("#sc-bt-pool").value;
-  const days = Number($("#sc-bt-days").value) || 250;
-  const adjust = $("#sc-bt-adjust").value;
-
-  $("#sc-bt-run").textContent = "回测中…";
-  $("#sc-bt-run").disabled = true;
-
-  try {
-    const benchCode = pool === "hs300" ? "sh000300" : pool === "zz500" ? "sh000905" : "sh000001";
-    const r = await fetch("/api/screen/backtest", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ code, stock_code: benchCode, days, adjust }),
-    }).then((x) => x.json());
-    if (r.error) { alert(r.error); return; }
-    renderScBacktest(r);
-  } catch (e) {
-    alert("回测失败: " + e);
-  } finally {
-    $("#sc-bt-run").textContent = "开始回测";
-    $("#sc-bt-run").disabled = false;
-  }
-});
-
-function renderScBacktest(r) {
-  $("#sc-bt-empty").style.display = "none";
-  $("#sc-bt-stats").style.display = "grid";
-  $("#sc-bt-chart-card").style.display = "block";
-  $("#sc-bt-trades-card").style.display = "block";
-
-  const totalRet = Number(r.total_ret || 0);
-  const annualRet = Number(r.annual_ret || 0);
-  const maxDd = Number(r.max_drawdown || 0);
-  const winRate = Number(r.win_rate || 0);
-  const profitRatio = Number(r.profit_ratio || 0);
-
-  $("#sc-bt-total-ret").textContent = totalRet.toFixed(2) + "%";
-  $("#sc-bt-total-ret").className = "sc-stat-value " + (totalRet >= 0 ? "positive" : "negative");
-
-  $("#sc-bt-annual-ret").textContent = annualRet.toFixed(2) + "%";
-  $("#sc-bt-annual-ret").className = "sc-stat-value " + (annualRet >= 0 ? "positive" : "negative");
-
-  $("#sc-bt-max-dd").textContent = maxDd.toFixed(2) + "%";
-
-  $("#sc-bt-win-rate").textContent = winRate.toFixed(1) + "%";
-  $("#sc-bt-win-rate").className = "sc-stat-value " + (winRate >= 50 ? "positive" : "");
-
-  $("#sc-bt-profit-ratio").textContent = profitRatio.toFixed(2);
-  $("#sc-bt-trade-count").textContent = r.trade_count || 0;
-
-  if (!scBtChart) scBtChart = echarts.init($("#sc-bt-chart"));
-  scBtChart.setOption({
-    backgroundColor: "transparent",
-    tooltip: { trigger: "axis" },
-    legend: { data: ["策略净值", "基准收益"], textStyle: { color: "#8392ad" }, top: 0 },
-    grid: { left: 60, right: 20, top: 40, bottom: 40 },
-    xAxis: { type: "category", data: r.dates, axisLine: { lineStyle: { color: "#1c2942" } }, axisLabel: { color: "#4d5d7d" } },
-    yAxis: { type: "value", scale: true, splitLine: { lineStyle: { color: "#1c2942" } }, axisLabel: { color: "#4d5d7d" } },
-    series: [
-      { name: "策略净值", type: "line", data: r.equity, smooth: true, showSymbol: false, lineStyle: { color: "#ff4d5f", width: 2 }, areaStyle: { color: "rgba(255,77,95,.08)" } },
-      { name: "基准收益", type: "line", data: r.benchmark, smooth: true, showSymbol: false, lineStyle: { color: "#7c5cff", width: 1.5, type: "dashed" } },
-    ],
-  });
-  setTimeout(() => scBtChart.resize(), 50);
-
-  const rows = r.trades?.length
-    ? r.trades.map((t) => {
-        const ret = t.ret * 100;
-        const cls = ret >= 0 ? "change-up" : "change-down";
-        return `<tr>
-          <td class="mono">${t.buy_date}</td>
-          <td class="mono">${t.sell_date}</td>
-          <td class="num mono">${fmt(t.buy_price, 4)}</td>
-          <td class="num mono">${fmt(t.sell_price, 4)}</td>
-          <td class="num mono ${cls}">${ret >= 0 ? "+" : ""}${ret.toFixed(2)}%</td>
-          <td class="num mono">${t.days}</td></tr>`;
-      }).join("")
-    : `<tr><td colspan="6" style="text-align:center;color:#4d5d7d">该区间内无交易信号</td></tr>`;
-  $("#sc-bt-trades").innerHTML =
-    `<thead><tr><th>买入日</th><th>卖出日</th><th class="num">买入价</th><th class="num">卖出价</th><th class="num">单次收益</th><th class="num">持天数</th></tr></thead><tbody>${rows}</tbody>`;
-}
 
 // ═══ 综合黄金行情 ══════════════════════════
 let goldHistoryChart = null;

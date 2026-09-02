@@ -239,6 +239,7 @@ input[type=checkbox]{accent-color:var(--cyan);width:16px;height:16px}
 .lvl-desc{font-size:12px;color:#8ba0c9;line-height:1.5;margin-bottom:4px}
 .lvl-advice{font-size:12px;color:#00d68f;line-height:1.5}
 .lvl-card.on .lvl-advice{color:#ffd700}
+.lvl-date{font-size:12px;color:#8a96b5;margin-bottom:8px;grid-column:1 / -1}
 
 /* ═══ 智能选股页 ═══ */
 
@@ -273,6 +274,11 @@ input[type=checkbox]{accent-color:var(--cyan);width:16px;height:16px}
 .sc-strategy-item-desc{font-size:11px;color:var(--sub);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 
 .sc-strategy-icon{font-size:13px;color:var(--sub);flex-shrink:0}
+
+/* 策略列表项删除按钮：默认隐藏，hover 时显现 */
+.sc-strategy-del{position:absolute;right:8px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;color:var(--sub,#6b7280);font-size:14px;padding:2px 6px;border-radius:3px;opacity:0;transition:opacity .15s}
+.sc-strategy-item:hover .sc-strategy-del{opacity:1}
+.sc-strategy-del:hover{color:var(--red,#e74c3c);background:rgba(231,76,60,.08)}
 .sc-empty-tip{text-align:center;color:#5a6a8a;font-size:12px;padding:30px 10px}
 
 /* 右侧主工作区 */
@@ -547,3 +553,10 @@ input[type=checkbox]{accent-color:var(--cyan);width:16px;height:16px}
     transform: translateY(-50%);
   }
 }
+
+/* 策略选股 — 结果表 A 股涨跌幅配色（红涨绿跌，scoped 避免影响其他卡片） */
+table#sc-results tbody td.chg-positive { color: #e74c3c; }
+table#sc-results tbody td.chg-negative { color: #2ecc71; }
+/* 操作列"回测"链接按钮（继承 .link-btn，如没有就给兜底样式） */
+button.link-btn.sc-backtest { background: none; border: none; padding: 0; cursor: pointer; color: #2563eb; font: inherit; text-decoration: underline; }
+button.link-btn.sc-backtest:hover { color: #1d4ed8; }
