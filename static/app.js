@@ -843,8 +843,8 @@ function renderIndexKline(d) {
     },
     legend: { data: ["MA5", "MA10", "MA20", "MA60", "MA120"], textStyle: { color: "#8ba0c9" }, top: 0 },
     grid: [
-      { left: 52, right: 20, top: 30, height: "58%" },
-      { left: 52, right: 20, top: "74%", height: "16%" },
+      { left: 65, right: 20, top: 30, height: "58%" },
+      { left: 65, right: 20, top: "74%", height: "16%" },
     ],
     xAxis: [
       { type: "category", data: labels, gridIndex: 0, boundaryGap: true, axisLine: { lineStyle: { color: "#2a3550" } }, axisLabel: { color: "#8ba0c9" } },
@@ -852,7 +852,7 @@ function renderIndexKline(d) {
     ],
     yAxis: [
       { type: "value", gridIndex: 0, scale: true, splitLine: { lineStyle: { color: "#16203a" } }, axisLabel: { color: "#8ba0c9" } },
-      { type: "value", gridIndex: 1, splitNumber: 2, axisLabel: { color: "#8ba0c9", formatter: volFmt }, splitLine: { show: false } },
+      { type: "value", gridIndex: 1, splitNumber: 3, axisLabel: { color: "#8ba0c9", formatter: volFmt }, splitLine: { show: false } },
     ],
     series: [
       { name: "K线", type: "candlestick", data: d.kline,
@@ -1164,17 +1164,42 @@ async function loadSentiment(force) {
     `涨停 ${s.zt_count}`, `跌停 ${s.dt_count}`, `炸板率 ${s.break_rate}%`, `晋级率 ${s.promo_rate}%`, `最高 ${s.max_height}板`,
   ].map((d) => `<span class="dim">${d}</span>`).join("");
   renderContrib(s.contributions);
-  renderLevelGuide(s.level, s.date);
+  // 情绪等级说明卡片基于前一个交易日（昨日完整收盘），不随今日盘中实时变动。
+  // 趋势数组(dates/levels)只含历史完整交易日，最后一条 = 昨日；latest 才是今日实时（v4 覆盖）。
+  const prevIdx = t.dates.length - 1;
+  if (prevIdx >= 0) renderLevelGuide(t.levels[prevIdx], t.dates[prevIdx]);
+  else renderLevelGuide(s.level, s.date); // 空数组兜底
   lastTrend = t;
   renderEmotionChart(t);
+  // ═══════════════════════════════════════════════════════════════
+  // 双重兜底：即使 /api/emotion_trend 的 latest 是整日缓存（旧值），
+  // 也用无缓存的 /api/sentiment 实时覆盖 DOM（score/level/维度/贡献度/刷新时间）。
+  // 确保首次加载 + Tab 切换都拿到真实值（即使 emotion_trend_cache.json 下午才重算）。
+  // ═══════════════════════════════════════════════════════════════
+  try {
+    const s2 = await fetch("/api/sentiment").then((r) => r.json());
+    if (s2 && s2.score != null) {
+      $("#se-score").textContent = s2.score;
+      $("#se-score").style.color = s2.score <= 45 ? "#00d68f" : s2.score >= 80 ? "#ff4d5f" : "#00e5ff";
+      $("#se-level").textContent = s2.level;
+      $("#se-dims").innerHTML = [
+        `涨停 ${s2.zt_count}`, `跌停 ${s2.dt_count}`,
+        `炸板率 ${s2.break_rate}%`, `晋级率 ${s2.promo_rate}%`,
+        `最高 ${s2.max_height}板`,
+      ].map((d) => `<span class="dim">${d}</span>`).join("");
+      renderContrib(s2.contributions);
+      sentRefreshTs = Date.now();
+      $("#se-date").textContent = `刷新于 ${fmtRefreshTime(sentRefreshTs)}`;
+    }
+  } catch (e) { console.error("/api/sentiment 兜底失败", e); }
 }
 
 // Task 2：日内定时刷新——只调无缓存的 /api/sentiment 实时接口，
 // 更新 情绪分/等级/维度/贡献条形图 四项 DOM，不重渲染 emotion-chart 走势大图，
 // 也不调 loadSentiment() 完整函数，避免与走势图/lastTrend 冲突。
 async function loadSentimentQuick() {
-  // 仅在 A 股交易时段刷新（集合竞价/持续交易/收盘竞价），午休与收盘后跳过
-  if (!isTradeSession()) return;
+  // 全天候刷新（不再仅限制在交易时段）：非交易时段也显示最近交易日的正确维度，
+  // 频率仍由 doFastRefresh 60s 全局节流控制，不会频繁请求。
   try {
     const s = await fetch("/api/sentiment").then((r) => r.json());
     if (!s || s.score == null) return;   // 数据不可用，静默退出，保留上次显示
@@ -1744,6 +1769,7 @@ function renderWatchKline(d) {
   const labels = d.dates.map((x) => x.slice(5)); // MM-DD
   const volFmt = (v) => (v >= 1e8 ? (v / 1e8).toFixed(2) + "亿" : v >= 1e4 ? (v / 1e4).toFixed(1) + "万" : v);
   const option = {
+    containLabel: true,            // 自动为 X/Y 轴标签预留空间，根治刻度重叠
     backgroundColor: "transparent",
     tooltip: {
       trigger: "axis", axisPointer: { type: "cross" }, backgroundColor: "#0d1226", borderColor: "#1c2540",
@@ -1761,16 +1787,18 @@ function renderWatchKline(d) {
         return s;
       },
     },
-    legend: { data: ["MA5", "MA10", "MA20", "MA60", "MA120", "K", "D", "J"], textStyle: { color: "#8ba0c9" }, top: 0 },
+    legend: { data: ["MA5", "MA10", "MA20", "MA60", "MA120", "K", "D", "J"], textStyle: { color: "#8ba0c9" }, top: "1%" },
     grid: [
-      { left: 52, right: 20, top: 30, height: "50%" },
-      { left: 52, right: 20, top: "66%", height: "12%" },
-      { left: 52, right: 20, top: "82%", height: "12%" },
+      // 三段全百分比定位，段间距 4%，top+height ≤ 94%，永不重叠/越界
+      { left: 52, right: 20, top: "6%",  height: "44%" },  // 主图：底 50%
+      { left: 52, right: 20, top: "54%", height: "14%" },  // 成交量：底 68%（段间距 4%）
+      { left: 52, right: 20, top: "72%", height: "22%" },  // KDJ：底 94%（段间距 4%）
     ],
     xAxis: [
-      { type: "category", data: labels, gridIndex: 0, boundaryGap: true, axisLine: { lineStyle: { color: "#2a3550" } }, axisLabel: { color: "#8ba0c9" } },
-      { type: "category", data: labels, gridIndex: 1, boundaryGap: true, axisLine: { lineStyle: { color: "#2a3550" } }, axisLabel: { color: "#8ba0c9" } },
-      { type: "category", data: labels, gridIndex: 2, boundaryGap: true, axisLine: { lineStyle: { color: "#2a3550" } }, axisLabel: { color: "#8ba0c9" } },
+      // 主图 & 成交量的 x 轴时间标签隐藏，只在 KDJ 底部保留，避免与上方 Y 轴刻度重叠
+      { type: "category", data: labels, gridIndex: 0, boundaryGap: true, axisLine: { lineStyle: { color: "#2a3550" } }, axisLabel: { show: false } },
+      { type: "category", data: labels, gridIndex: 1, boundaryGap: true, axisLine: { lineStyle: { color: "#2a3550" } }, axisLabel: { show: false } },
+      { type: "category", data: labels, gridIndex: 2, boundaryGap: true, axisLine: { lineStyle: { color: "#2a3550" } }, axisLabel: { show: true, color: "#8ba0c9" } },
     ],
     yAxis: [
       { type: "value", gridIndex: 0, scale: true, splitLine: { lineStyle: { color: "#16203a" } }, axisLabel: { color: "#8ba0c9" } },

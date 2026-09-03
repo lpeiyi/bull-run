@@ -562,7 +562,7 @@ button.link-btn.sc-backtest { background: none; border: none; padding: 0; cursor
 button.link-btn.sc-backtest:hover { color: #1d4ed8; }
 
 /* 自选K线弹窗 */
-#watch-kline-chart { width: 100%; height: 480px; }
+#watch-kline-chart { width: 100%; height: 560px; }
 #wk-title { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
 #wk-title h3 { margin: 0; }
 .wk-close { background: none; border: none; color: #8a96b5; cursor: pointer; font-size: 18px; padding: 4px 8px; }

@@ -16,6 +16,8 @@ from datetime import datetime, timedelta
 
 import requests
 
+import logging
+from core import legu
 from core.data import UA
 
 EM_SESSION = requests.Session()
@@ -123,6 +125,39 @@ def _promo_rate(date, today_codes):
     return round(len(still) / len(y_codes) * 100, 1)
 
 
+def _filter_zt_pool(zt_list):
+    """过滤涨停池：排除 ST/*ST 股票和上市不足 60 日的新股，对齐开盘啦口径。
+
+    东财涨停池 c 字段为 pure_code 格式（如 "600903"），故映射 key 用 pure_code。
+    load_stock_list 无 list_date 字段，新股过滤会被跳过（不影响 ST 过滤）。
+    """
+    try:
+        from core.screener import load_stock_list
+        stocks = load_stock_list()  # 有 24h 缓存
+        stock_map = {s.get("pure_code", ""): s for s in stocks}
+        cutoff = datetime.now() - timedelta(days=60)
+        filtered = []
+        for code in zt_list:
+            s = stock_map.get(code, {})
+            name = s.get("name", "")
+            # 排除 ST/*ST
+            if "ST" in name or "*ST" in name:
+                continue
+            # 排除新股（上市不足 60 日）—— list_date 字段缺失时跳过此检查
+            list_date = s.get("list_date")
+            if list_date:
+                try:
+                    ld = datetime.strptime(str(list_date)[:10], "%Y-%m-%d")
+                    if ld > cutoff:
+                        continue
+                except (ValueError, TypeError):
+                    pass
+            filtered.append(code)
+        return filtered
+    except Exception:
+        return zt_list  # 过滤失败返回原列表
+
+
 def _calc_score(zt_n, dt_n, max_height, promo_rate, break_rate):
     """算情绪分(0~100)与等级，单日与历史序列共用。
 
@@ -175,22 +210,52 @@ def get_sentiment():
     """
     计算当前市场情绪分。返回 {score, level, trade_date, zt_count, dt_count,
     zb_count, break_rate, promo_rate, max_height, contributions}
+
+    数据来源：优先走乐咕 API（涨停/跌停/炸板数+炸板率），东财仅补充连板高度和晋级率。
+    乐咕缓存不是当日或失败时回退东财+新浪逻辑（涨停池过滤 ST/新股对齐开盘啦口径）。
     """
     date = _find_recent_trade_date()
     if not date:
         return {"score": None, "error": "未探测到最近交易日", "trade_date": None}
 
-    zt_codes, max_height = _zt_codes(date)
-    zt_n = len(zt_codes)
-    zb_n = _zb_count(date)
-    dt_n = _dt_count(date)
+    # 东财涨停池：过滤 ST/新股后用于连板高度、晋级率和回退涨停数
+    pool = _em_pool("getTopicZTPool", date)
+    zt_codes = _filter_zt_pool([p["c"] for p in pool])
+    zt_set = set(zt_codes)
+    # 用过滤后的涨停池重算最高连板高度（排除 ST/新股的连板）
+    max_height = max((p.get("lbc", 0) for p in pool if p["c"] in zt_set), default=0) if zt_set else 0
     promo_rate = _promo_rate(date, zt_codes)
-    break_rate = round(zb_n / (zt_n + zb_n) * 100, 1) if (zt_n + zb_n) else 0.0
+
+    # 优先用乐咕 API 获取主因子（涨停/跌停/炸板数+炸板率），口径与历史一致
+    zt_n = zb_n = dt_n = 0
+    break_rate = 0.0
+    trade_date = date  # 默认用东财探测到的交易日
+    legu_ok = False
+    try:
+        rows = legu.fetch_legu_history()
+        # 仅当乐咕最后一条日期 == 当日时才采用，避免用到早盘缓存的不完整前一日数据
+        if rows and rows[-1].get("date", "") == date:
+            last = rows[-1]
+            zt_n = last.get("zt_count", 0)
+            dt_n = last.get("dt_count", 0)
+            zb_n = last.get("zb_count", 0)
+            break_rate = last.get("break_rate", 0.0)
+            trade_date = last.get("date", date)  # 乐咕返回的 YYYYMMDD
+            legu_ok = True
+    except Exception as e:
+        logging.warning(f"乐咕 API 失败，回退东财+新浪: {e}")
+
+    # 乐咕缓存不是当日或失败时回退东财+新浪逻辑
+    if not legu_ok:
+        zt_n = len(zt_codes)
+        zb_n = _zb_count(date)
+        dt_n = _dt_count(date)
+        break_rate = round(zb_n / (zt_n + zb_n) * 100, 1) if (zt_n + zb_n) else 0.0
 
     score, level, contributions = _calc_score(zt_n, dt_n, max_height, promo_rate, break_rate)
 
     return {
-        "score": score, "level": level, "trade_date": date,
+        "score": score, "level": level, "trade_date": trade_date,
         "zt_count": zt_n, "dt_count": dt_n, "zb_count": zb_n,
         "break_rate": break_rate, "promo_rate": promo_rate, "max_height": max_height,
         "contributions": contributions,

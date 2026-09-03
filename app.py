@@ -169,9 +169,23 @@ def api_overview():
     """市场概览：指数 + 情绪 + 涨停/炸板/跌停池 + 板块，60秒缓存"""
     now = time.time()
     force = request.args.get("force") == "1"
+    # ═══════════════════════════════════════════════════════════════════
+    # 缓存策略：其它字段（indexes/boards/量能等）保留 60 秒缓存，但
+    # sentiment（情绪分）必须**每次实时**计算，避免缓存卡住旧值（如涨停83/跌停0）
+    # 导致用户看到错误数据。注：Flask 重启前旧字节码可能仍在，如仍错需重启。
+    # ═══════════════════════════════════════════════════════════════════
+    cached = None
     if not force and _OVERVIEW_CACHE["data"] and now - _OVERVIEW_CACHE["ts"] < 60:
-        return jsonify(_OVERVIEW_CACHE["data"])
+        cached = _OVERVIEW_CACHE["data"]
+    # sentiment 始终实时（不走缓存）
     s = sentiment.get_sentiment()
+    enriched_sent = _enrich_sentiment(s)
+    if cached is not None:
+        # 只替换 sentiment，其余用缓存
+        cached["sentiment"] = enriched_sent
+        cached["trade_date"] = (lambda td: f"{td[:4]}-{td[4:6]}-{td[6:8]}" if td else None)(s.get("trade_date"))
+        return jsonify(cached)
+    # 无缓存，全量计算
     date = s.get("trade_date")
     zt = market.get_zt_pool(date) if date else []
     zb = market.get_zb_pool(date) if date else []
@@ -183,7 +197,7 @@ def api_overview():
         "trade_date": f"{td[:4]}-{td[4:6]}-{td[6:8]}" if td else None,
         "index_order": market.INDEX_CODES,
         "indexes": market.get_indexes(),
-        "sentiment": _enrich_sentiment(s),
+        "sentiment": enriched_sent,
         "ladder": ladder,
         "zt_pool": zt,
         "zb_pool": zb,
@@ -339,6 +353,35 @@ def api_emotion_trend():
             "name": name,
             "values": [round(v / base * 100, 2) if v else None for v in vals],
         })
+    # ═══════════════════════════════════════════════════════════════
+    # latest 强制实时，不依赖整日缓存（可能 trend[-1] 仍是昨日=83/0/6.7%）。
+    # 前端短线情绪卡片只读取 t.latest，必须覆盖为实时 sentiment.get_sentiment()。
+    # ═══════════════════════════════════════════════════════════════
+    latest = dict(trend[-1]) if trend else {}
+    try:
+        s = sentiment.get_sentiment()  # 实时：乐咕优先 + 东财回退
+        enriched = _enrich_sentiment(s)  # 补齐 history_scores / history_labels / prev_score
+        # 日期格式统一：_enrich_sentiment 返回的 enriched["date"] 是 YYYY-MM-DD，
+        # latest 的 date 应与 trend 元素一致（get_emotion_trend 返回的是 YYYYMMDD 字符串）。
+        td_raw = s.get("trade_date")  # YYYYMMDD（与 v2 / _find_recent_trade_date 格式一致）
+        latest.update({
+            "score": enriched.get("score"),
+            "level": enriched.get("level"),
+            "date": td_raw if td_raw else latest.get("date"),  # latest 原格式 YYYYMMDD
+            "trade_date": td_raw,
+            "zt_count": s.get("zt_count"),
+            "dt_count": s.get("dt_count"),
+            "zb_count": s.get("zb_count"),
+            "break_rate": s.get("break_rate"),
+            "promo_rate": s.get("promo_rate"),
+            "max_height": s.get("max_height"),
+            "contributions": s.get("contributions") or enriched.get("contributions", {}),
+            "history_scores": enriched.get("history_scores", []),
+            "history_labels": enriched.get("history_labels", []),
+            "prev_score": enriched.get("prev_score"),
+        })
+    except Exception:
+        pass  # 失败保留原默认 trend[-1]
     return jsonify({
         "dates": dates,
         "labels": [t["label"] for t in trend],
@@ -351,7 +394,7 @@ def api_emotion_trend():
         "levels": [t["level"] for t in trend],
         "contributions": [t.get("contributions") or {} for t in trend],  # 每日五维度贡献度，前端 latest 条渲染条形图
         "indexes": indexes,
-        "latest": trend[-1] if trend else None,
+        "latest": latest,
     })
 
 

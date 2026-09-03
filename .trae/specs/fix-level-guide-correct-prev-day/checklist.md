@@ -1,0 +1,5 @@
+- [x] `prevIdx` 值为 `t.dates.length - 1`（不是 `length - 2`）
+- [x] 注释正确说明「趋势数组最后一条 = 昨日完整收盘，不含今日」
+- [x] `renderLevelGuide` 实参为 `t.levels[prevIdx]` 和 `t.dates[prevIdx]`
+- [x] 空数组时不报错（有 fallback 到 latest）
+- [x] 仅修改 `static/app.js` 1 个文件
