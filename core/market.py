@@ -137,34 +137,125 @@ def get_dt_pool(date):
     return out
 
 
-def _compare_and_pick(em_rows, sina_rows, label):
-    """东财 vs 新浪名值交叉比对：偏差 > 0.5pp 切新浪；空源直接选另一源。"""
-    if not sina_rows and not em_rows:
+# ── 板块数据源 ──────────────────────────────────────
+SINA_HY_URL = "https://money.finance.sina.com.cn/q/view/newSinaHy.php"
+SINA_CON_URL = "https://money.finance.sina.com.cn/q/view/newFLJK.php?param=class"
+
+# 东财正常返回 100 条板块；少于该条数视为源不完整，改用备用源
+_MIN_SOURCE_ROWS = 20
+
+# 东财板块含Ⅰ/Ⅱ/Ⅲ 层级，名称末尾可能带罗马数字标记
+_LEVEL_SUFFIX = ("Ⅲ", "Ⅱ", "Ⅰ")
+
+
+def _parse_sina(url):
+    """新浪板块解析：返回 [] 表示拉取/解析失败。"""
+    r = requests.get(url, headers={"User-Agent": UA}, timeout=12)
+    r.encoding = "gbk"
+    m = re.search(r"=\s*(\{.*?\})\s*;?\s*$", r.text, re.S)
+    if not m:
         return []
-    if not sina_rows:  # 新浪失败回退东财
-        return list(em_rows)
-    if not em_rows:    # 东财失败直接用新浪
-        return list(sina_rows)
-    # 取双方前 5 名按 name 交叉比对 avg_pct 平均偏差
-    em_map = {x.get("name", ""): x.get("avg_pct") for x in em_rows[:5]}
-    diffs = []
-    hits = 0
-    for s in sina_rows[:5]:
-        sname = s.get("name", "")
-        spct = s.get("avg_pct")
-        if not isinstance(spct, (int, float)):
+    d = json.loads(m.group(1))
+    rows = []
+    for raw in d.values():
+        parts = raw.split(",")
+        if len(parts) < 13:
             continue
-        if sname in em_map and isinstance(em_map[sname], (int, float)):
-            diffs.append(abs(em_map[sname] - spct))
-            hits += 1
-    # 命中 ≥3 条 且 平均偏差 > 0.5pp → 切新浪（证明东财口径系统性偏了）
-    if hits >= 3 and sum(diffs) / len(diffs) > 0.5:
-        logging.getLogger(__name__).info(
-            "[boards] %s: 东财与新浪 avg_pct 偏差过大(hits=%d, avgΔ=%.2fpp)，切换新浪为主源",
-            label, hits, sum(diffs) / len(diffs))
+        try:
+            rows.append({
+                "name": parts[1], "stock_count": int(parts[2]),
+                "avg_pct": round(float(parts[4]), 2),
+                "amount_yi": round(float(parts[7]) / 1e8, 2),
+                "leader_name": parts[12], "leader_pct": round(float(parts[9]), 2),
+            })
+        except (ValueError, IndexError):
+            continue
+    return rows
+
+
+def _parse_em(fs_code):
+    """东财板块解析：fs=m:90+t:2 行业、m:90+t:3 概念。
+    f3 为整数化涨跌幅(81 表示 0.81%)，需 /100 与新浪单位对齐。
+    f6 为成交额，单位为元，/1e8 转成亿。
+
+    排序必须用 fid（排序字段）+ po（方向）两个参数；写成 fl=f3 不会有
+    任何排序效果（fl 是"返回哪些字段"的参数），接口会退回按板块代码返回，
+    导致候选池变成"代码序前 100 个"而非"涨幅最高的 100 个"。
+    """
+    url = "https://push2.eastmoney.com/api/qt/clist/get"
+    params = {"pn": 1, "pz": 100, "po": 1, "np": 1, "fid": "f3",
+              "fields": "f12,f14,f3,f6", "fs": fs_code}
+    try:
+        r = requests.get(url, headers={"User-Agent": UA}, params=params, timeout=12)
+        diff = (r.json().get("data") or {}).get("diff") or []
+    except Exception:
+        return []
+    rows = []
+    for item in diff:
+        try:
+            rows.append({
+                "name": item["f14"],
+                "stock_count": 0,                # 东财该接口未返回成分股数
+                "avg_pct": round(float(item["f3"]) / 100, 2),
+                "amount_yi": round(float(item.get("f6") or 0) / 1e8, 2),  # f6 单位为元，转亿
+                "leader_name": "",               # 东财该接口未返回领涨股
+                "leader_pct": 0.0,
+                "code": item["f12"],             # 板块代码，供扩展使用
+            })
+        except (KeyError, ValueError, TypeError):
+            continue
+    return rows
+
+
+def _sina_or_empty(url):
+    """新浪源拉取，失败返回 []（不向调用方抛异常）。"""
+    try:
+        return _parse_sina(url)
+    except Exception:
+        logging.getLogger(__name__).warning("[boards] 新浪源拉取失败: %s", url)
+        return []
+
+
+def _pick_source(em_rows, sina_rows, label):
+    """东财优先；东财不可靠时回退新浪；两者皆空返回 []。
+
+    原实现（_compare_and_pick）依赖"两源存在同名板块、可交叉比对涨幅"的前提，
+    实测该前提不成立：新浪返回 49 个大类、东财返回 496 个细分板块，名称交集
+    仅 6 个（重合率 12.2%），交叉命中数恒为 0 —— 校准从未触发，故整体移除。
+    """
+    log = logging.getLogger(__name__)
+    if em_rows and len(em_rows) >= _MIN_SOURCE_ROWS:
+        return list(em_rows)
+    if sina_rows:
+        log.warning("[boards] %s: 东财源不可靠(em=%d 条)，回退新浪(%d 条)",
+                    label, len(em_rows), len(sina_rows))
         return list(sina_rows)
-    # 否则仍使用东财（保留其默认排序/更多字段）
-    return list(em_rows)
+    if em_rows:
+        log.warning("[boards] %s: 两源均不完整，沿用东财(%d 条)", label, len(em_rows))
+        return list(em_rows)
+    log.warning("[boards] %s: 东财与新浪均无数据", label)
+    return []
+
+
+def _base_name(name):
+    """去掉名称末尾的罗马数字层级标记，用于识别同一行业的不同层级。"""
+    n = name or ""
+    while n and n[-1] in _LEVEL_SUFFIX:
+        n = n[:-1]
+    return n
+
+
+def _dedup_by_level(rows):
+    """同一基名的板块只保留排序靠前的一个（入参须已降序）。"""
+    seen, out = set(), []
+    for x in rows:
+        base = _base_name(x.get("name", ""))
+        if base and base in seen:
+            continue
+        if base:
+            seen.add(base)
+        out.append(x)
+    return out
 
 
 def _clean_and_sort(rows):
@@ -179,77 +270,23 @@ def _clean_and_sort(rows):
 
 
 def get_boards():
-    """行业 + 概念板块，按平均涨幅降序。东财主源失败时回退新浪备用源。"""
-    def _parse_sina(url):
-        """新浪板块解析：返回 [] 表示拉取/解析失败。"""
-        r = requests.get(url, headers={"User-Agent": UA}, timeout=12)
-        r.encoding = "gbk"
-        m = re.search(r"=\s*(\{.*?\})\s*;?\s*$", r.text, re.S)
-        if not m:
-            return []
-        d = json.loads(m.group(1))
-        rows = []
-        for raw in d.values():
-            parts = raw.split(",")
-            if len(parts) < 13:
-                continue
-            try:
-                rows.append({
-                    "name": parts[1], "stock_count": int(parts[2]),
-                    "avg_pct": round(float(parts[4]), 2),
-                    "amount_yi": round(float(parts[7]) / 1e8, 2),
-                    "leader_name": parts[12], "leader_pct": round(float(parts[9]), 2),
-                })
-            except (ValueError, IndexError):
-                continue
-        return rows
+    """行业 + 概念板块，按平均涨幅降序。东财为主源，新浪为备用源。
 
-    def _parse_em(fs_code):
-        """东财板块解析：fs=m:90+t:2 行业、m:90+t:3 概念。
-        f3 为整数化涨跌幅(81 表示 0.81%)，需 /100 与新浪单位对齐。
-        f6 为成交额，单位为元，/1e8 转成亿。
-        fl=f3 指定按涨跌幅字段降序（po=1），保证返回顺序稳定。"""
-        url = "https://push2.eastmoney.com/api/qt/clist/get"
-        params = {"pn": 1, "pz": 100, "po": 1, "np": 1, "fl": "f3",
-                  "fields": "f12,f14,f3,f6", "fs": fs_code}
-        try:
-            r = requests.get(url, headers={"User-Agent": UA}, params=params, timeout=12)
-            diff = (r.json().get("data") or {}).get("diff") or []
-        except Exception:
-            return []
-        rows = []
-        for item in diff:
-            try:
-                rows.append({
-                    "name": item["f14"],
-                    "stock_count": 0,                # 东财该接口未返回成分股数
-                    "avg_pct": round(float(item["f3"]) / 100, 2),
-                    "amount_yi": round(float(item.get("f6") or 0) / 1e8, 2),  # f6 单位为元，转亿
-                    "leader_name": "",               # 东财该接口未返回领涨股
-                    "leader_pct": 0.0,
-                    "code": item["f12"],             # 板块代码，供扩展使用
-                })
-            except (KeyError, ValueError, TypeError):
-                continue
-        return rows
-
-    # 双源校准：同时拉取东财和新浪，再做名值交叉比对切换主源。
-    # （东财 f3 是板块指数涨跌幅，不等同于"成分股平均涨幅 avg_pct"，系统性偏低；
-    #  新浪 newSinaHy / newFLJK 返回的 parts[4] 即为成分股平均涨幅，口径与用户期望一致。）
+    东财 clist 接口按 fid=f3&po=1 返回全量板块的涨幅降序前 100 条，榜单取
+    前 10 有余量；新浪仅在东财不可靠（空或条数不足）时才请求，正常路径不
+    发新浪请求，比原实现少两次网络往返。
+    """
     em_ind = _parse_em("m:90+t:2")
     em_con = _parse_em("m:90+t:3")
-    try:
-        sina_ind = _parse_sina("https://money.finance.sina.com.cn/q/view/newSinaHy.php")
-    except Exception:
-        sina_ind = []
-    try:
-        sina_con = _parse_sina("https://money.finance.sina.com.cn/q/view/newFLJK.php?param=class")
-    except Exception:
-        sina_con = []
+    # 东财不可靠时才拉对应新浪源
+    sina_ind = _sina_or_empty(SINA_HY_URL) if len(em_ind) < _MIN_SOURCE_ROWS else []
+    sina_con = _sina_or_empty(SINA_CON_URL) if len(em_con) < _MIN_SOURCE_ROWS else []
 
-    ind = _clean_and_sort(_compare_and_pick(em_ind, sina_ind, "industry"))
-    con = _clean_and_sort(_compare_and_pick(em_con, sina_con, "concept"))
-    return {"industry": ind, "concept": con}
+    def build(em, sina, label):
+        return _dedup_by_level(_clean_and_sort(_pick_source(em, sina, label)))
+
+    return {"industry": build(em_ind, sina_ind, "industry"),
+            "concept": build(em_con, sina_con, "concept")}
 
 
 # ── 市场量能 ──────────────────────────────────────
