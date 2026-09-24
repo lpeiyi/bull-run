@@ -486,6 +486,8 @@ input[type=checkbox]{accent-color:var(--cyan);width:16px;height:16px}
   flex-wrap:nowrap;
   padding:6px 4px;
   border-radius:7px;
+  height:38px;            /* 固定行高，防止视觉错位（rank/name 跨行对齐） */
+  box-sizing:border-box;
 }
 .boards-bar-row.up { flex-direction:row; }
 .boards-bar-row.down { flex-direction:row; }

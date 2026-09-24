@@ -1,0 +1,16 @@
+- [ ] AC-1.1: _parse_em params 含 'fl': 'f3'
+- [ ] AC-1.2: _compare_and_pick() 存在且逻辑正确（前5名name交叉，avg_pct平均偏差>0.5pp选sina；空源回退规则）
+- [ ] AC-1.3: get_boards() 同时调用 em+sina（industry+concept 共 4 次）+ 最终经 _compare_and_pick 切换
+- [ ] AC-1.4: 最终 ind/con 排序前 isinstance+非 NaN 空值过滤
+- [ ] AC-1.5: 顶部 import math
+- [ ] AC-1.6: 锚点对得上 — industry[0].avg_pct 与新浪源第一名偏差 ≤ 0.3pp（若 2026-09-04 或相同行情日，≈3.61；第二名≈2.32）
+- [ ] AC-2.1: renderBoardsTop10 boards_up = industry.slice().sort(降序 null 兜底).slice(0,10)
+- [ ] AC-2.2: renderBoardsTop10 boards_down = [...industry].sort(升序 ??1e9 null 兜底).slice(0,10)
+- [ ] AC-2.3: 渲染 name 用 x.name||"--" 、avg_pct 用 x.avg_pct??0
+- [ ] AC-3.1: .boards-bar-row CSS 含 height:38px + box-sizing:border-box
+- [ ] AC-3.2: 自选标的新增 CSS 全带 .tbl 前缀，.boards-top10 无后代匹配
+- [ ] AC-4.1: 自选标的 5 项功能（查看K线/拖拽/移首/删除/列宽）代码不变
+- [ ] AC-4.2: /api/overview 路由签名 / _OVERVIEW_CACHE 结构未被改动
+- [ ] AC-4.3: app.py "boards": market.get_boards() 仍存在
+- [ ] AC-4.4: py_compile core/market.py pass
+- [ ] AC-4.5: py_compile app.py pass

@@ -658,8 +658,8 @@ function renderBoardsTop10(boards) {
 
   // 渲染右侧领跌栏：顺序排列（跌幅最大排第1），绿条左向，DOM 顺序：bar-track → pct.down → name → rank
   downBox.innerHTML = boards_down.map((x, i) => {
-    const name = x.name || "";
-    const avg_pct = x.avg_pct ?? 0;
+    const name = x.name || "--";
+    const avg_pct = x?.avg_pct ?? 0;
     // 归一化宽度（使用跌幅绝对值），并限制在 0~100% 之间
     const width = Math.min(100, Math.max(0, -avg_pct / maxAbs * 100));
     return `<div class="boards-bar-row down">
