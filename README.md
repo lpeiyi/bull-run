@@ -109,6 +109,23 @@
 
 > 冷却时间用于防止同一条件短时间内反复推送。程序需一直运行才会自动提醒。
 
+## 开发与测试
+
+回归测试覆盖情绪分算法、技术指标、通达信公式解释器与板块选源逻辑，**全部离线可跑**（不会发起网络请求）。
+
+```
+# 首次准备：用 start.bat 指定的同一个 Python 装 pytest
+"C:\Users\peiyilu\AppData\Local\Programs\Python\Python312\python.exe" -m pip install pytest
+
+# 运行（在项目根目录）
+"C:\Users\peiyilu\AppData\Local\Programs\Python\Python312\python.exe" -m pytest
+```
+
+改动 `core/` 里的算法后跑一遍，能立刻知道有没有弄坏既有逻辑。测试用例见 `tests/`，
+需求 / 设计 / 任务见 `specs/add-regression-tests/`。
+
+> 与 `scripts/` 下的脚本分工不同：**测试**管纯计算逻辑的回归；**脚本**管联网的「接口是否还在、字段有没有变」契约校验。
+
 ## 配置说明
 
 - `config.example.json` 是示例配置模板，首次运行时复制为 `config.json`
@@ -140,6 +157,16 @@ bull-run/
 ├── indicators.json           # 选股策略（通达信公式 + 配置）
 ├── requirements.txt          # Python 依赖
 ├── start.bat                 # Windows 启动脚本
+├── pytest.ini                # 测试配置（testpaths / pythonpath）
+├── ROADMAP.md                # 非功能性改进计划
+├── specs/                    # 需求 · 设计 · 任务（spec 工作流产物）
+├── scripts/                  # 联网契约校验脚本（接口是否还在、字段有没有变）
+├── tests/                    # 回归测试（pytest，离线可跑）
+│   ├── conftest.py           # 共用夹具 + 离线强制（阻断 socket）
+│   ├── test_sentiment.py     # 情绪分五维度 / 跌停判定
+│   ├── test_indicators.py    # MA / MACD / KDJ / RSI / BOLL
+│   ├── test_tdx.py           # 通达信公式解释器
+│   └── test_market_boards.py # 板块双源选源与清洗排序
 ├── core/                     # 后端核心
 │   ├── data.py               # 行情/K线数据层（腾讯+新浪）
 │   ├── market.py             # 市场概览：指数 / 涨停池 / 板块 / 市场量能（KPL 校准权重 9 锚点预测 + ±30% clamp + 241 分钟分时连续）
