@@ -431,7 +431,21 @@ input[type=checkbox]{accent-color:var(--cyan);width:16px;height:16px}
 .w-add-msg{font-size:12px;color:var(--sub)}
 .w-add-msg.ok{color:var(--green)}
 .w-add-msg.err{color:var(--red)}
-.w-del{padding:3px 10px;font-size:12px}
+.w-del{padding:5px 12px;font-size:12.5px;font-weight:600}
+/* 拖拽手柄（三条杠）——外框参考 .btn ghost sm */
+.w-grip{display:inline-flex;align-items:center;vertical-align:middle;padding:5px 12px;cursor:grab;user-select:none;background:transparent;color:var(--cyan);border:1px solid rgba(0,229,255,.4);border-radius:8px}
+.w-grip:active{cursor:grabbing}
+.w-grip svg{display:block;pointer-events:none}
+/* 移首按钮 SVG 图标不继承按钮 padding */
+.w-top svg{display:block;pointer-events:none}
+/* disabled 灰态（移首按钮首条置灰） */
+.tbl .btn[disabled],.tbl .btn.disabled{opacity:.35;cursor:not-allowed;pointer-events:none}
+/* 拖拽视觉反馈：被拖行半透明 + 目标行上下边高亮线 */
+.tbl tr.dragging{opacity:.4}
+.tbl tr.drag-over-top{box-shadow:inset 0 2px 0 0 var(--cyan)}
+.tbl tr.drag-over-bottom{box-shadow:inset 0 -2px 0 0 var(--cyan)}
+/* 操作列按钮高度强制统一：消除 button/span + 文字/SVG 的 line-height 差异 */
+.tbl td .btn.sm,.tbl td .w-grip{display:inline-flex;align-items:center;justify-content:center;line-height:1;height:28px;box-sizing:border-box;vertical-align:middle}
 
 /* ═══ 综合黄金行情卡 ═══ */
 .gold-spot{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-bottom:16px}

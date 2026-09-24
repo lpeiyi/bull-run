@@ -1614,9 +1614,14 @@ function renderWatch(q) {
   tb.innerHTML = CONFIG.watchlist.map((w) => {
     const qq = q[w.code];
     const nm = qq ? (qq.name || w.name) : (w.name || w.code);
+    const isTop = w.code === CONFIG.watchlist[0].code;
     const btnKline = `<button class="btn ghost sm w-kline" data-code="${w.code}" data-name="${nm}">查看K线</button>`;
+    // 三条杠拖拽手柄：鼠标左键按住可上下拖动行
+    const btnGrip = `<span class="w-grip" data-code="${w.code}" title="拖动排序"><svg viewBox="0 0 16 16" width="13" height="13"><line x1="2" y1="4" x2="14" y2="4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><line x1="2" y1="8" x2="14" y2="8" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><line x1="2" y1="12" x2="14" y2="12" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></span>`;
+    // 移首按钮：上箭头 + 正上方短横线，暗示「到达顶端」
+    const btnTop = `<button class="btn ghost sm w-top" data-code="${w.code}"${isTop ? " disabled" : ""} title="移到首行"><svg viewBox="0 0 16 16" width="13" height="13"><line x1="2" y1="2" x2="14" y2="2" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M8 4 L8 14 M4 8 L8 4 L12 8" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg></button>`;
     const btnDel = `<button class="btn danger sm w-del" data-code="${w.code}">删除</button>`;
-    const op = `<td>${btnKline}${btnDel}</td>`;
+    const op = `<td>${btnKline}${btnGrip}${btnTop}${btnDel}</td>`;
     if (!qq) return `<tr><td>${nm}</td><td class="mono">${w.code}</td><td colspan="4" style="color:#4d5d7d">数据缺失</td>${op}</tr>`;
     return `<tr><td>${nm}</td><td class="mono">${w.code}</td>
       <td class="num mono">${fmt(qq.price, 3)}</td>
@@ -1624,12 +1629,19 @@ function renderWatch(q) {
       <td class="num mono">${fmt(qq.amount_yi)}</td>
       <td class="num mono">${fmt(qq.turnover_pct)}%</td>${op}</tr>`;
   }).join("");
-  // 事件绑定（操作列两个按钮）
+  // 事件绑定（操作列：查看K线 / 拖拽手柄 / 移首 / 删除）
   tb.querySelectorAll(".w-del").forEach((b) =>
     b.addEventListener("click", () => delWatch(b.dataset.code))
   );
   tb.querySelectorAll(".w-kline").forEach((b) =>
     b.addEventListener("click", () => openWatchKline(b.dataset.code, b.dataset.name))
+  );
+  tb.querySelectorAll(".w-top").forEach((b) =>
+    b.addEventListener("click", () => watchTop(b.dataset.code))
+  );
+  // 拖拽排序：鼠标按住三条杠手柄上下拖动行
+  tb.querySelectorAll(".w-grip").forEach((g) =>
+    g.addEventListener("mousedown", (e) => onDragStart(e, g.dataset.code))
   );
 }
 
@@ -1688,6 +1700,76 @@ async function delWatch(code) {
   CONFIG.watchlist = CONFIG.watchlist.filter((w) => w.code !== code);
   await saveConfig();
   loadWatch();
+}
+
+// 自选标的：移到首行（splice 取 + unshift 放头），首条不移动
+async function watchTop(code) {
+  const i = CONFIG.watchlist.findIndex((w) => w.code === code);
+  if (i <= 0) return;
+  const [item] = CONFIG.watchlist.splice(i, 1);
+  CONFIG.watchlist.unshift(item);
+  await saveConfig();
+  loadWatch();
+}
+
+// ═══ 自选标的拖拽排序 ═══
+// 鼠标按住三条杠手柄，上下拖动行到任意位置，松开即持久化
+let dragSrcCode = null;     // 被拖动的标的 code
+let dragOverCode = null;    // 拖拽目标行的 code
+let dragInsertBefore = true; // 插入到目标行前面还是后面
+
+function onDragStart(e, code) {
+  e.preventDefault();
+  dragSrcCode = code;
+  const tr = e.target.closest("tr");
+  if (tr) tr.classList.add("dragging");
+  document.addEventListener("mousemove", onDragMove);
+  document.addEventListener("mouseup", onDragEnd);
+}
+
+function onDragMove(e) {
+  const rows = [...$("#w-tbody").querySelectorAll("tr")];
+  rows.forEach((r) => r.classList.remove("drag-over-top", "drag-over-bottom"));
+  for (const r of rows) {
+    if (r.classList.contains("dragging")) continue;
+    const rect = r.getBoundingClientRect();
+    if (e.clientY >= rect.top && e.clientY <= rect.bottom) {
+      const mid = rect.top + rect.height / 2;
+      if (e.clientY < mid) {
+        r.classList.add("drag-over-top");
+        dragInsertBefore = true;
+      } else {
+        r.classList.add("drag-over-bottom");
+        dragInsertBefore = false;
+      }
+      dragOverCode = r.querySelector(".w-grip")?.dataset.code;
+      return;
+    }
+  }
+  dragOverCode = null;
+}
+
+async function onDragEnd() {
+  document.removeEventListener("mousemove", onDragMove);
+  document.removeEventListener("mouseup", onDragEnd);
+  const rows = [...$("#w-tbody").querySelectorAll("tr")];
+  rows.forEach((r) => r.classList.remove("dragging", "drag-over-top", "drag-over-bottom"));
+  // 执行数组重排：从原位置取出，插入到目标位置
+  if (dragSrcCode && dragOverCode && dragSrcCode !== dragOverCode) {
+    const srcIdx = CONFIG.watchlist.findIndex((w) => w.code === dragSrcCode);
+    if (srcIdx >= 0) {
+      const [item] = CONFIG.watchlist.splice(srcIdx, 1);
+      let dstIdx = CONFIG.watchlist.findIndex((w) => w.code === dragOverCode);
+      if (dstIdx >= 0) {
+        if (!dragInsertBefore) dstIdx++; // 插入到目标行后面
+        CONFIG.watchlist.splice(dstIdx, 0, item);
+        await saveConfig();
+        loadWatch();
+      }
+    }
+  }
+  dragSrcCode = null;
+  dragOverCode = null;
 }
 
 // 打开自选标的 K 线弹窗
