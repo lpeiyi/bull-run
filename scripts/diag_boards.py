@@ -36,5 +36,8 @@ def _call(extra_params, label):
     for i, (n, p) in enumerate(rows):
         print("  %2d. %-8s pct=%6.2f" % (i+1, n, p))
 
-_call({}, "默认（不加 fl 排序字段）")
-_call({"fl": "f3"}, "加 fl=f3（按涨跌幅降序）")
+# 单独测东财 push2 接口的排序参数：fl 无效、fid 有效
+# （2026-09-24 修正：fl 是"返回哪些字段"的参数、不产生排序效果，
+#   接口会退回按板块代码返回；排序必须用 fid + po 两个参数。）
+_call({"fl": "f3"}, "旧写法 fl=f3（无排序效果，返回代码序前 N 个）")
+_call({"fid": "f3"}, "新写法 fid=f3 + po=1（按涨跌幅正确降序）")

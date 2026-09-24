@@ -1,92 +1,120 @@
 # -*- coding: utf-8 -*-
-"""AC-1.6 验证脚本：比较 get_boards() 返回的 industry[0] 与新浪原始源第一名"""
-import sys, os, json, re, inspect
-sys.path.insert(0, os.getcwd())
+"""板块榜单验收脚本（对应 specs/fix-boards-source-selection 的 AC-5.3）。
 
-import requests
-from core.data import UA
+判定口径（2026-09-24 修订）：
+  ① get_boards()['industry'] 的 avg_pct 严格降序；
+  ② 榜首与东财 m:90+t:2（fid=f3&po=1）源榜首一致（名称相同 + 涨幅差 ≤0.01）；
+  ③ 榜单中无「去掉末尾罗马数字后同名」的重复项。
 
-# 1) 直接调用新浪接口，拿到其第一名
-def _parse_sina_direct(url):
+原口径「比对新浪源第一名」已废弃：新浪返回 49 个大类、东财返回 496 个细分
+板块，名称体系不同（重合率仅 12.2%），二者不具可比性，该锚点本身不成立。
+
+用法（需能访问外网）：
+  python scripts/verify_boards.py
+"""
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import requests  # noqa: E402
+from core.data import UA  # noqa: E402
+
+_LEVEL_SUFFIX = ("Ⅲ", "Ⅱ", "Ⅰ")
+
+
+def _em_top(fs_code):
+    """直接请求东财，返回按 f3 降序的原始榜单（作为验收基准）。"""
+    url = "https://push2.eastmoney.com/api/qt/clist/get"
+    params = {"pn": 1, "pz": 100, "po": 1, "np": 1, "fid": "f3",
+              "fields": "f12,f14,f3,f6", "fs": fs_code}
+    r = requests.get(url, headers={"User-Agent": UA}, params=params, timeout=15)
+    diff = (r.json().get("data") or {}).get("diff") or []
+    return [{"name": it["f14"], "avg_pct": round(float(it["f3"]) / 100, 2)}
+            for it in diff]
+
+
+def _base(name):
+    n = name or ""
+    while n and n[-1] in _LEVEL_SUFFIX:
+        n = n[:-1]
+    return n
+
+
+def main():
+    print("=" * 64)
+    print("[Step 1] 调用 core.market.get_boards()")
     try:
-        r = requests.get(url, headers={"User-Agent": UA}, timeout=15)
-        r.encoding = "gbk"
-        m = re.search(r"=\s*(\{.*?\})\s*;?\s*$", r.text, re.S)
-        if not m:
-            print(f"[sina_direct] 正则未匹配到 JSON：{r.text[:200]}")
-            return []
-        d = json.loads(m.group(1))
-        rows = []
-        for raw in d.values():
-            parts = raw.split(",")
-            if len(parts) < 13:
-                continue
-            try:
-                rows.append({
-                    "name": parts[1],
-                    "avg_pct": round(float(parts[4]), 2),
-                    "amount_yi": round(float(parts[7]) / 1e8, 2),
-                    "leader_name": parts[12],
-                })
-            except (ValueError, IndexError):
-                continue
-        # 按 avg_pct 降序
-        rows.sort(key=lambda x: x["avg_pct"], reverse=True)
-        return rows
+        import core.market as m
+        boards = m.get_boards()
+        ind = boards.get("industry") or []
+        con = boards.get("concept") or []
+        print(f"  industry 条数: {len(ind)}    concept 条数: {len(con)}")
+        for i, x in enumerate(ind[:10]):
+            print(f"    Top{i + 1:>2}: {x.get('name', ''):<18} "
+                  f"{x.get('avg_pct', 0):>6.2f}%")
     except Exception as e:
-        print(f"[sina_direct] 拉取异常: {type(e).__name__}: {e}")
-        return []
+        import traceback
+        print(f"  get_boards() 异常: {type(e).__name__}: {e}")
+        traceback.print_exc()
+        ind = []
 
-print("=" * 60)
-print("[Step 1] 单独拉取新浪 industry(newSinaHy) 第一名...")
-try:
-    sina_ind = _parse_sina_direct("https://money.finance.sina.com.cn/q/view/newSinaHy.php")
-except Exception as e:
-    print(f"  新浪拉取异常（外层）: {e}")
-    sina_ind = []
+    print()
+    print("=" * 64)
+    print("[Step 2] 拉取东财原始源（fid=f3&po=1）作为基准")
+    try:
+        em = _em_top("m:90+t:2")
+        if em:
+            print(f"  东财源条数: {len(em)}")
+            print(f"  东财第1名: {em[0]['name']} {em[0]['avg_pct']:.2f}%")
+            print(f"  东财第2名: {em[1]['name']} {em[1]['avg_pct']:.2f}%"
+                  if len(em) >= 2 else "")
+        else:
+            print("  东财源为空")
+    except Exception as e:
+        print(f"  东财拉取异常: {type(e).__name__}: {e}")
+        em = []
 
-print(f"  sina_ind 长度: {len(sina_ind)}")
-sina_top = sina_ind[0] if sina_ind else None
-if sina_top:
-    print(f"  新浪第1名: name={sina_top['name']}  avg_pct={sina_top['avg_pct']:.2f}%  leader={sina_top.get('leader_name','')}")
-    if len(sina_ind) >= 2:
-        print(f"  新浪第2名: name={sina_ind[1]['name']}  avg_pct={sina_ind[1]['avg_pct']:.2f}%")
-else:
-    print("  sina_ind = [] (空) —— 网络/代理不可达 或 解析失败")
+    print()
+    print("=" * 64)
+    print("[Step 3] 判定")
+    results = []
 
-print()
-print("=" * 60)
-print("[Step 2] 调用 core.market.get_boards() —— 双源校准结果")
-try:
-    import core.market as m
-    b = m.get_boards()
-    ind = b["industry"]
-    print(f"  industry 总数: {len(ind)}")
-    for i, x in enumerate(ind[:5]):
-        print(f"    Top{i+1}: name={x.get('name',''):<10}  avg_pct={x.get('avg_pct',0):.2f}%  "
-              f"amount={x.get('amount_yi',0):.2f}亿  leader={x.get('leader_name','')}")
-except Exception as e:
-    import traceback
-    print(f"  get_boards() 异常: {type(e).__name__}: {e}")
-    traceback.print_exc()
-    ind = []
-
-print()
-print("=" * 60)
-print("[Step 3] 判定：industry[0] vs 新浪第1名")
-if not ind:
-    print("  RESULT: BLOCKED (最终 industry 为空，无法比较)")
-elif not sina_top:
-    print("  RESULT: BLOCKED (新浪源不可达，无法建立锚点)")
-else:
-    final_top = ind[0]
-    name_match = final_top.get("name") == sina_top["name"]
-    diff = abs(final_top.get("avg_pct", 0) - sina_top["avg_pct"])
-    print(f"  最终第1名: {final_top.get('name')} {final_top.get('avg_pct',0):.2f}%")
-    print(f"  新浪第1名: {sina_top['name']} {sina_top['avg_pct']:.2f}%")
-    print(f"  name 相同: {name_match}")
-    print(f"  avg_pct 差值: {diff:.2f}pp  (容差 ≤0.3pp)")
-    if name_match and diff <= 0.3:
-        print("  RESULT: PASS (双源切换生效，已对齐新浪主源)")
+    # ① 严格降序
+    if ind:
+        pcts = [x.get("avg_pct", 0) for x in ind]
+        desc = all(pcts[i] >= pcts[i + 1] for i in range(len(pcts) - 1))
+        results.append(("① 榜单严格降序", desc, f"{len(pcts)} 条"))
     else:
-        print("  RESULT: FAIL (未对齐新浪第一名，偏差超容差或name不同)")
+        results.append(("① 榜单严格降序", False, "榜单为空"))
+
+    # ② 榜首与东财源一致
+    if ind and em:
+        a, b = ind[0], em[0]
+        diff = abs(a.get("avg_pct", 0) - b["avg_pct"])
+        ok = (a.get("name") == b["name"]) and diff <= 0.01
+        results.append(("② 榜首与东财源一致", ok,
+                        f"榜单={a.get('name')} {a.get('avg_pct')}% vs "
+                        f"东财={b['name']} {b['avg_pct']}% (差 {diff:.2f}pp)"))
+    else:
+        results.append(("② 榜首与东财源一致", False, "榜单或东财源为空"))
+
+    # ③ 无同层级重复项
+    bases = [_base(x.get("name", "")) for x in ind]
+    dups = sorted({b for b in bases if b and bases.count(b) > 1})
+    results.append(("③ 无同层级重复项", not dups,
+                    f"重复基名: {'、'.join(dups) if dups else '无'}"))
+
+    for name, ok, detail in results:
+        print(f"  {'PASS' if ok else 'FAIL'}  {name}  —— {detail}")
+
+    print()
+    if all(ok for _, ok, _ in results):
+        print("  RESULT: PASS（榜单来源正确、排序正确、无重复）")
+        return 0
+    print("  RESULT: FAIL")
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
