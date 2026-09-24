@@ -4,6 +4,7 @@
 指数/行情：腾讯（秒级）；涨停四池：东财；板块：新浪
 """
 import logging
+import math
 import os
 import time
 import random
