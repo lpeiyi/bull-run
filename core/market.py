@@ -137,6 +137,47 @@ def get_dt_pool(date):
     return out
 
 
+def _compare_and_pick(em_rows, sina_rows, label):
+    """东财 vs 新浪名值交叉比对：偏差 > 0.5pp 切新浪；空源直接选另一源。"""
+    if not sina_rows and not em_rows:
+        return []
+    if not sina_rows:  # 新浪失败回退东财
+        return list(em_rows)
+    if not em_rows:    # 东财失败直接用新浪
+        return list(sina_rows)
+    # 取双方前 5 名按 name 交叉比对 avg_pct 平均偏差
+    em_map = {x.get("name", ""): x.get("avg_pct") for x in em_rows[:5]}
+    diffs = []
+    hits = 0
+    for s in sina_rows[:5]:
+        sname = s.get("name", "")
+        spct = s.get("avg_pct")
+        if not isinstance(spct, (int, float)):
+            continue
+        if sname in em_map and isinstance(em_map[sname], (int, float)):
+            diffs.append(abs(em_map[sname] - spct))
+            hits += 1
+    # 命中 ≥3 条 且 平均偏差 > 0.5pp → 切新浪（证明东财口径系统性偏了）
+    if hits >= 3 and sum(diffs) / len(diffs) > 0.5:
+        logging.getLogger(__name__).info(
+            "[boards] %s: 东财与新浪 avg_pct 偏差过大(hits=%d, avgΔ=%.2fpp)，切换新浪为主源",
+            label, hits, sum(diffs) / len(diffs))
+        return list(sina_rows)
+    # 否则仍使用东财（保留其默认排序/更多字段）
+    return list(em_rows)
+
+
+def _clean_and_sort(rows):
+    """isinstance + 非 NaN 空值过滤 + avg_pct 降序"""
+    out = []
+    for x in rows:
+        p = x.get("avg_pct")
+        if isinstance(p, (int, float)) and not (isinstance(p, float) and math.isnan(p)):
+            out.append(x)
+    out.sort(key=lambda x: x["avg_pct"], reverse=True)
+    return out
+
+
 def get_boards():
     """行业 + 概念板块，按平均涨幅降序。东财主源失败时回退新浪备用源。"""
     def _parse_sina(url):
@@ -205,45 +246,6 @@ def get_boards():
         sina_con = _parse_sina("https://money.finance.sina.com.cn/q/view/newFLJK.php?param=class")
     except Exception:
         sina_con = []
-
-    def _compare_and_pick(em_rows, sina_rows, label):
-        """东财 vs 新浪名值交叉比对：偏差 > 0.5pp 切新浪；空源直接选另一源。"""
-        if not sina_rows and not em_rows:
-            return []
-        if not sina_rows:  # 新浪失败回退东财
-            return list(em_rows)
-        if not em_rows:    # 东财失败直接用新浪
-            return list(sina_rows)
-        # 取双方前 5 名按 name 交叉比对 avg_pct 平均偏差
-        em_map = {x.get("name", ""): x.get("avg_pct") for x in em_rows[:5]}
-        diffs = []
-        hits = 0
-        for s in sina_rows[:5]:
-            sname = s.get("name", "")
-            spct = s.get("avg_pct")
-            if not isinstance(spct, (int, float)):
-                continue
-            if sname in em_map and isinstance(em_map[sname], (int, float)):
-                diffs.append(abs(em_map[sname] - spct))
-                hits += 1
-        # 命中 ≥3 条 且 平均偏差 > 0.5pp → 切新浪（证明东财口径系统性偏了）
-        if hits >= 3 and sum(diffs) / len(diffs) > 0.5:
-            logging.getLogger(__name__).info(
-                "[boards] %s: 东财与新浪 avg_pct 偏差过大(hits=%d, avgΔ=%.2fpp)，切换新浪为主源",
-                label, hits, sum(diffs) / len(diffs))
-            return list(sina_rows)
-        # 否则仍使用东财（保留其默认排序/更多字段）
-        return list(em_rows)
-
-    def _clean_and_sort(rows):
-        """isinstance + 非 NaN 空值过滤 + avg_pct 降序"""
-        out = []
-        for x in rows:
-            p = x.get("avg_pct")
-            if isinstance(p, (int, float)) and not (isinstance(p, float) and math.isnan(p)):
-                out.append(x)
-        out.sort(key=lambda x: x["avg_pct"], reverse=True)
-        return out
 
     ind = _clean_and_sort(_compare_and_pick(em_ind, sina_ind, "industry"))
     con = _clean_and_sort(_compare_and_pick(em_con, sina_con, "concept"))
