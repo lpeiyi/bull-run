@@ -23,3 +23,6 @@ venv/
 # 系统
 .DS_Store
 Thumbs.db
+
+# 临时调试产物（勿提交；脚本放 scripts/，参考素材放对应 spec 的 reference/）
+_tmp_*
