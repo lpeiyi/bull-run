@@ -6,7 +6,7 @@
 
 ## 阶段 0 · 环境准备
 
-- [ ] **1. 安装 pytest 并建立测试入口**
+- [x] **1. 安装 pytest 并建立测试入口**
   - 用系统 Python 3.12.10 安装：`"C:/Users/peiyilu/AppData/Local/Programs/Python/Python312/python.exe" -m pip install pytest`
   - 确认版本 ≥ 7.0（`pytest.ini` 的 `pythonpath` 配置项需要），记录实际版本
   - 新建 `tests/` 目录
@@ -16,7 +16,7 @@
 
 ## 阶段 1 · 测试基础设施
 
-- [ ] **2. 编写 `tests/conftest.py`**
+- [x] **2. 编写 `tests/conftest.py`**
   - autouse 夹具 `_no_network`：patch `socket.socket.connect`、`socket.socket.connect_ex`、`socket.create_connection`，被调用即抛 `AssertionError`
   - 工厂夹具 `kline_factory(n=60, base=10.0, step=0.1)`：返回含 `date/open/high/low/close/volume` 的等差 K 线 DataFrame
   - 自检：写一个临时用例断言夹具可用（如 `len(df) == n`），确认后并入正式用例或删除
@@ -24,7 +24,7 @@
 
 ## 阶段 2 · 结构性提取（唯一生产代码改动）
 
-- [ ] **3. 将 `_compare_and_pick` / `_clean_and_sort` 提取到 `core/market.py` 模块级**
+- [x] **3. 将 `_compare_and_pick` / `_clean_and_sort` 提取到 `core/market.py` 模块级**
   - 前置确认：模块顶部已有 `import math`、`import logging`，缺则补（配套改动，非行为变更）
   - **记录行为基线**：提取前运行 `scripts/verify_boards.py` 与 `scripts/diag_boards.py`，保存输出
   - 两个函数**原样**搬到模块级（置于 `get_boards()` 之前），函数体一行不改
@@ -36,7 +36,7 @@
 
 ## 阶段 3 · 测试用例编写
 
-- [ ] **4. `tests/test_sentiment.py` — 情绪分算法**
+- [x] **4. `tests/test_sentiment.py` — 情绪分算法**
   - AC-2.1 ~ AC-2.3：涨停贡献 `base` 的下界（18 家 = 0）、上界（≥150 家 = 90）、`zt_n=0` 时 `score=0`
   - AC-2.4 ~ AC-2.7：`连板高度 / 晋级率 / 炸板率 / 跌停惩罚` 四维度各一组参数化断言，直取 `contributions` 对应键
   - AC-2.9：等级五档边界，按 `design.md` §5.1 的参考输入表参数化
@@ -44,7 +44,7 @@
   - AC-2.10：键集合等于五个固定键；`round(sum(contributions.values())) == score`（未钳制时）
   - _Requirement: AC-2.1 ~ AC-2.10_
 
-- [ ] **5. `tests/test_sentiment.py` — 跌停判定**
+- [x] **5. `tests/test_sentiment.py` — 跌停判定**
   - AC-3.1：北交所 `-29.5 / -29.4` 边界（`market="bj"`）
   - AC-3.2：创业板 `300` / 科创板 `688` 的 `-19.5 / -19.4` 边界
   - AC-3.3：主板 `-9.8 / -9.79` 边界
@@ -52,7 +52,7 @@
   - 全部以**字典**构造入参（如 `{"change_pct": -9.8, "pure_code": "600000", "market": "sh"}`）
   - _Requirement: AC-3.1 ~ AC-3.4_
 
-- [ ] **6. `tests/test_indicators.py`**
+- [x] **6. `tests/test_indicators.py`**
   - AC-4.1：`ma(close, n)` 前 n−1 位为 `NaN`、第 n 位等于前 n 个值的算术平均
   - AC-4.2 / 4.3 / 4.6：`macd` 恒等式、`kdj` 的 `j` 恒等式、`boll` 上下轨对称——用 `numpy.testing.assert_allclose(..., rtol=1e-9, atol=1e-9)`
   - AC-4.4：构造 `high == low` 区间，断言 k/d/j 无 `NaN`、无 `inf`、不抛异常
@@ -60,14 +60,14 @@
   - 注意与 `tdx.KDJ` 的实现差异（分母兜底方式不同），期望值不可互用
   - _Requirement: AC-4.1 ~ AC-4.6_
 
-- [ ] **7. `tests/test_tdx.py`**
+- [x] **7. `tests/test_tdx.py`**
   - AC-5.1：参数化若干非法公式（`"选股: 1 + "`、`"选股: (C"`、`""` 等），断言 `check_tdx_syntax` 返回 `ok=False` 且错误信息非空、不抛异常
   - AC-5.2：合法布尔公式（如 `"选股: C > MA(C,5);"`）→ 解包 `(results, signal)`；断言输出变量序列 `len == len(df)` 且 `dtype == bool`
   - AC-5.3：`"选股: KDJ.J > 80;"` 不报错且能取到输出
   - AC-5.4：同 code + 同 df 连调两次，两次结果完全一致
   - _Requirement: AC-5.1 ~ AC-5.4_
 
-- [ ] **8. `tests/test_market_boards.py`**
+- [x] **8. `tests/test_market_boards.py`**
   - AC-6.1 / 6.2 / 6.5：单源为空、双源为空的三个分支
   - AC-6.3：构造两源前 5 名中 ≥3 条同名且平均偏差 > 0.5pp（样本见 `design.md` §5.4）→ 期望切新浪
   - AC-6.4：同样 ≥3 条命中但偏差 ≤ 0.5pp → 期望保持东财
@@ -77,7 +77,7 @@
 
 ## 阶段 4 · 验证与缺陷处理（关键闸门）
 
-- [ ] **9. 全量跑通、校验与缺陷修复**
+- [x] **9. 全量跑通、校验与缺陷修复**
   - 项目根执行 `"C:/.../Python312/python.exe" -m pytest -v`：确认 34 条 AC 全部有用例覆盖、全绿、60 秒内结束
   - **校验手算参考表**（`design.md` §5.1 AC-2.9 表）：逐行核对实际 score 与等级
   - **校验非法公式样本**（§5.3）：确认每个样本确实走到 `check_tdx_syntax` 的失败分支，否则替换样本
@@ -89,7 +89,7 @@
 
 ## 阶段 5 · 收尾
 
-- [ ] **10. 文档更新与提交**
+- [x] **10. 文档更新与提交**
   - `ROADMAP.md` 第 3 项状态改为「已完成」
   - 根 `README.md` 补一节「运行测试」（含解释器绝对路径命令）
   - 追加 `.workbuddy/memory/` 当日日志
@@ -109,3 +109,34 @@
 | 3 · 用例 | AC-2 ~ AC-6 | 每个测试文件单独跑全绿 |
 | 4 · 验证 | AC-1.1 ~ 1.4 | 全量 `pytest` 一次通过、<60s、坏码能变红 |
 | 5 · 收尾 | 全项 | 文档更新、提交入库、无冗余文件 |
+
+---
+
+## 执行记录（已完成）
+
+10 个任务全部完成。实际结果与计划的差异：
+
+| 项 | 计划 | 实际 |
+|---|---|---|
+| pytest 版本 | ≥ 7.0 | **9.1.1**（沙箱内因代理无法安装，最终出沙箱直连 PyPI） |
+| 用例数 | 覆盖 34 条 AC | **196 个用例**，0.45s 全绿 |
+| AC-2.9 手算边界表 | 待首跑校验 | **8 组全部命中**，无需校准 |
+| 缺陷数 | 未预估 | **2 个**（测试暴露，均当场修复） |
+| 非法公式样本 | 待确认有效性 | 4 个样本均确实走到失败分支 |
+
+**修掉的缺陷**
+1. `core/market.py` 缺模块级 `import math` → `_clean_and_sort` 处理浮点 `avg_pct` 抛 `NameError`
+2. `core/tdx.py` 项提取不识别 `[...]` 下标后缀 → 指标属性参与比较运算时表达式畸形
+
+**新增发现**（不在本 spec 范围，另立 ROADMAP 第 8 项）
+- 双源校准 `_compare_and_pick` 取未排序列表的前 5 行比对，实际两源均非按涨幅降序
+  → `hits` 恒为 0 → 校准从不触发。需确认判定口径后单独处理。
+
+**提交**
+```
+0e7719d fix(market): 补上缺失的 import math，修复板块清洗抛 NameError
+f01c48a refactor(market): 提取板块选源与清洗函数到模块级以便测试
+159fb9a fix(tdx): 修复指标属性参与比较运算时表达式畸形导致公式失效
+561e104 test: 新增核心模块回归测试套件（196 用例，覆盖 34 条验收标准）
+236cd09 docs: 补充回归测试 spec 三件套，更新 ROADMAP 与 README
+```
