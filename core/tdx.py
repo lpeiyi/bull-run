@@ -167,11 +167,52 @@ def _find_matching_paren(s, start):
     return -1
 
 
+def _find_matching_bracket(s, start):
+    """从 '[' 或 ']' 出发找匹配的另一种方括号，找不到返回 -1。
+
+    用于识别「指标属性」展开后的下标后缀，如 KDJ(HIGH,LOW,CLOSE,9,3,3)[2] 里的 [2]。
+    """
+    if s[start] == '[':
+        depth = 1
+        i = start + 1
+        while i < len(s) and depth > 0:
+            if s[i] == '[': depth += 1
+            elif s[i] == ']': depth -= 1
+            if depth == 0: return i
+            i += 1
+    elif s[start] == ']':
+        depth = 1
+        i = start - 1
+        while i >= 0 and depth > 0:
+            if s[i] == ']': depth += 1
+            elif s[i] == '[': depth -= 1
+            if depth == 0: return i
+            i -= 1
+    return -1
+
+
+def _consume_bracket_suffix(expr, end):
+    """若 end 之后紧跟一个或多个 [...] 下标后缀，则一并纳入，返回新的末尾位置。"""
+    while end + 1 < len(expr) and expr[end + 1] == '[':
+        close = _find_matching_bracket(expr, end + 1)
+        if close < 0:
+            break
+        end = close
+    return end
+
+
 def _extract_term_left(expr, pos):
     """从 pos 向左提取一个完整的项（变量/数字/字符串/括号/函数调用）"""
     i = pos
     while i >= 0 and expr[i] in ' \t': i -= 1
     if i < 0: return None
+    # 下标后缀：如 KDJ(...)[2]。从 ']' 回溯到匹配的 '['，再继续取左侧的项。
+    if expr[i] == ']':
+        br = _find_matching_bracket(expr, i)
+        if br < 0: return None
+        inner = _extract_term_left(expr, br - 1)
+        if inner is None: return None
+        return inner[0], i
     end = i
     if expr[i] == ')':
         paren_end = i
@@ -198,7 +239,7 @@ def _extract_term_left(expr, pos):
 
 
 def _extract_term_right(expr, pos):
-    """从 pos 向右提取一个完整的项"""
+    """从 pos 向右提取一个完整的项（含可选的 [...] 下标后缀）"""
     i = pos
     while i < len(expr) and expr[i] in ' \t': i += 1
     if i >= len(expr): return None
@@ -206,7 +247,7 @@ def _extract_term_right(expr, pos):
     if expr[i] == '(':
         paren_end = _find_matching_paren(expr, i)
         if paren_end < 0: return None
-        return start, paren_end
+        return start, _consume_bracket_suffix(expr, paren_end)
     if expr[i] == "'":
         j = i + 1
         while j < len(expr) and expr[j] != "'": j += 1
@@ -220,8 +261,8 @@ def _extract_term_right(expr, pos):
     if j + 1 < len(expr) and expr[j + 1] == '(':
         paren_end = _find_matching_paren(expr, j + 1)
         if paren_end >= 0:
-            return start, paren_end
-    return start, j
+            return start, _consume_bracket_suffix(expr, paren_end)
+    return start, _consume_bracket_suffix(expr, j)
 
 
 # ── 公式预处理 ────────────────────────────────────────
