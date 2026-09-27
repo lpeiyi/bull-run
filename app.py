@@ -734,8 +734,13 @@ def api_screen_cancel(task_id):
 @app.route("/api/screen/stock_list")
 def api_screen_stock_list():
     force = request.args.get("force") == "1"
-    stocks = screener.load_stock_list(force=force)
-    return jsonify({"count": len(stocks), "stocks": stocks[:20]})
+    stocks, meta = screener.load_stock_list_meta(force=force)
+    return jsonify({
+        "count": len(stocks),
+        "stocks": stocks[:20],
+        "degraded": meta.get("degraded", False),
+        "reason": meta.get("reason", ""),
+    })
 
 
 # ── 选股页回测 ────────────────────────────────────────
