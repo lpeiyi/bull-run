@@ -111,7 +111,7 @@
 
 ## 开发与测试
 
-回归测试覆盖情绪分算法、技术指标、通达信公式解释器与板块选源逻辑，**全部离线可跑**（不会发起网络请求）。
+回归测试覆盖情绪分算法、技术指标、通达信公式解释器、板块选源逻辑与选股清单容错，**全部离线可跑**（不会发起网络请求）。
 
 ```
 # 首次准备：用 start.bat 指定的同一个 Python 装 pytest
@@ -124,7 +124,37 @@
 改动 `core/` 里的算法后跑一遍，能立刻知道有没有弄坏既有逻辑。测试用例见 `tests/`，
 需求 / 设计 / 任务见 `specs/add-regression-tests/`。
 
-> 与 `scripts/` 下的脚本分工不同：**测试**管纯计算逻辑的回归；**脚本**管联网的「接口是否还在、字段有没有变」契约校验。
+> 与 `scripts/` 下的脚本分工不同：**测试**管纯计算逻辑的回归；**脚本**管与外部打交道的核验与运维（接口契约、缓存体检）。
+
+### K 线缓存体检与清理
+
+`data/screener/klines` 会随选股/回测不断累积 K 线缓存。想知道它占多少、多少已过期、
+有没有清单里已不存在的废弃文件，用 `scripts/cache_health.py`：
+
+```
+# 体检（只读，不改任何文件）
+python scripts/cache_health.py report
+
+# 清理预演（dry-run，只列出将删什么）
+python scripts/cache_health.py clean
+
+# 真正删除（需显式 --apply）
+python scripts/cache_health.py clean --apply
+
+# 连带删除复权孤儿（切换过复权方式后遗留的旧文件）
+python scripts/cache_health.py clean --apply --orphan-adjust
+```
+
+安全约定：清理**默认只预演**，必须显式加 `--apply` 才动手；删除对象仅限「当前清单里已不存在的标的」；
+删除粒度为整文件（删掉的文件下次访问会自动重拉，不影响回测取满 250 日）；
+当股票清单本身处于**降级状态**（拉取失败回退旧缓存）时会**拒绝清理**，避免以残缺清单为基准误删。
+
+### 股票清单的降级提示
+
+启动后第一次选股会拉全市场清单（沪/深/北，约 5,500+ 只）并缓存 24 小时。
+若拉取失败，程序会**自动回退到上一次的清单**而不是写入残缺结果，
+`/api/screen/stock_list` 会返回 `degraded: true` 与 `reason` 说明。看到该标记时可访问
+`/api/screen/stock_list?force=1` 重新拉取。
 
 ## 配置说明
 
@@ -160,13 +190,18 @@ bull-run/
 ├── pytest.ini                # 测试配置（testpaths / pythonpath）
 ├── ROADMAP.md                # 非功能性改进计划
 ├── specs/                    # 需求 · 设计 · 任务（spec 工作流产物）
-├── scripts/                  # 联网契约校验脚本（接口是否还在、字段有没有变）
+├── scripts/                  # 运维/核验脚本（接口契约校验、缓存体检与清理）
+│   ├── verify_boards.py      # 板块榜接口契约校验
+│   ├── diag_boards.py        # 板块数据诊断
+│   └── cache_health.py       # K 线缓存体检 report / 清理 clean
 ├── tests/                    # 回归测试（pytest，离线可跑）
 │   ├── conftest.py           # 共用夹具 + 离线强制（阻断 socket）
 │   ├── test_sentiment.py     # 情绪分五维度 / 跌停判定
 │   ├── test_indicators.py    # MA / MACD / KDJ / RSI / BOLL
 │   ├── test_tdx.py           # 通达信公式解释器
-│   └── test_market_boards.py # 板块双源选源与清洗排序
+│   ├── test_market_boards.py # 板块双源选源与清洗排序
+│   ├── test_screener_stocklist.py  # 清单拉取容错 / 降级回退 / 三市齐全
+│   └── test_cache_health.py  # 缓存体检统计与清理判定
 ├── core/                     # 后端核心
 │   ├── data.py               # 行情/K线数据层（腾讯+新浪）
 │   ├── market.py             # 市场概览：指数 / 涨停池 / 板块 / 市场量能（KPL 校准权重 9 锚点预测 + ±30% clamp + 241 分钟分时连续）
@@ -177,7 +212,7 @@ bull-run/
 │   ├── backtest.py           # 内置指标回测引擎
 │   ├── indicators.py         # 技术指标库（MA/MACD/KDJ/RSI/BOLL）
 │   ├── tdx.py                # 通达信公式解释器
-│   ├── screener.py           # 选股引擎（全市场+异步）
+│   ├── screener.py           # 选股引擎（全市场清单容错 + 异步选股）
 │   ├── rules.py              # 规则引擎（条件触发+冷却）
 │   └── notifier.py           # 飞书推送
 ├── templates/

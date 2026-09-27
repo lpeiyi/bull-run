@@ -61,13 +61,18 @@ A股 / 基金ETF 短线盯盘工具（「牛来」）。Flask 单页应用 + `co
 
 ## 回归测试（ROADMAP 第 3 项，已完成）
 - 运行：项目根执行 `"C:\Users\peiyilu\AppData\Local\Programs\Python\Python312\python.exe" -m pytest`
-- **205 个用例**，**离线可跑**（`tests/conftest.py` 用 autouse 夹具阻断 socket），约 0.5 秒
-- 覆盖 `sentiment` / `indicators` / `tdx` / `market` 四个模块，
-  需求见 `specs/add-regression-tests/` 与 `specs/fix-boards-source-selection/`
+- **252 个用例**，**离线可跑**（`tests/conftest.py` 用 autouse 夹具阻断 socket），约 2 秒
+- 覆盖 `sentiment` / `indicators` / `tdx` / `market` / `screener`(清单容错) 及 `scripts/cache_health.py`，
+  需求见 `specs/add-regression-tests/`、`specs/fix-boards-source-selection/`、
+  `specs/fix-stocklist-and-cache-health/`
 - **改 `core/` 里任何算法后必须先跑一遍**再交付
-- `scripts/` 下的脚本管联网契约校验（接口是否还在、字段有没有变），与测试分工不同
+- `scripts/` 下的脚本两类：**联网契约校验**（接口是否还在、字段有没有变）与**缓存体检运维**，
+  与测试的分工不同
 - 交付前自查项：**"改坏即变红"有效性自检**——临时改坏一处被测逻辑，确认对应用例真的失败，
   再回滚。防止出现"测试全绿但其实没测到东西"的假安全
+- 测网络分页逻辑的通用手法：把唯一的网络出入口（如 `screener._sina_get`）换成内存假接口，
+  假接口**除返回分页数据外还要记录请求过的页序列**，否则断言不了"失败后仍继续拉后续页"；
+  记得同时把 `time.sleep` 置空，免得真等退避
 
 ## 板块榜单口径（ROADMAP 第 8 项，已完成）
 - 主源为**东财** `push2/clist/get`，`fs=m:90+t:2`(行业) / `t:3`(概念)
@@ -79,7 +84,7 @@ A股 / 基金ETF 短线盯盘工具（「牛来」）。Flask 单页应用 + `co
 - 旧的「双源按名称交叉比对」已废弃：两源分类体系不同，名称交集仅 12.2%，永远命中不了
 - 验收脚本：`scripts/verify_boards.py`（三项判定：严格降序 / 榜首与东财源一致 / 无同层级重复）
 
-## 数据缓存机制（ROADMAP 第 5 项调研，2026-09-27 实测）
+## 数据缓存机制（ROADMAP 第 5 项，已完成）
 - `data/screener/klines/{code}_{adjust}.csv` 由 `get_cached_kline()` 写：
   **`df.to_csv(path)` 覆盖写、不追加**；单文件行数中位 400、上限 400
   （`kline(code, max(days+150,300))`）→ **单文件大小恒定，不随时间增长**
@@ -90,11 +95,25 @@ A股 / 基金ETF 短线盯盘工具（「牛来」）。Flask 单页应用 + `co
   （文件缺失会被 `get_cached_kline` 自动重拉）。当前代码不做裁剪
 - 缓存过期判据：文件内 `max(date) == 今天` 才复用，否则整表重拉
 - **复权类型参与文件名** → 切换到 hfq/bfq 会另生成一整套文件，旧套成孤儿（当前仅 qfq，未发生）
+- 体检/清理工具：`scripts/cache_health.py report|clean [--apply] [--orphan-adjust]`
+  （默认只读 / dry-run；清单降级时拒绝清理）
+
+## 股票清单口径（ROADMAP 第 5 项，已完成）
+- 清单接口：新浪 `Market_Center.getHQNodeData`，`node=hs_a&sort=symbol&asc=1&num=100` 分页，
+  返回顺序 **`bj < sh < sz`**（所以「拉到一半断掉」的表现是**全是北交所**）
+- 全市场应有 **5,568 只**（沪 2,319 / 深 2,902 / 北 347）；清单缓存 24 小时
+- 缓存文件 `data/screener/stock_list.json` 结构：
+  `{"ts", "version":2, "complete":true, "stocks":[...]}`；
+  **只有 `complete is True` 才走 24h 直用**，无 `version` 的旧文件一律重拉修正
+- 容错参数：`_MIN_STOCK_COUNT=2000`（低于即判失败）、`_PAGE_MAX_RETRY=3`、
+  `_MAX_CONSECUTIVE_FAIL=3`（连续 3 页失败即判网络不可用，提前结束）
+- 落库规则：**仅完整结果才写**；拉取失败则回退旧缓存并标 `degraded=True`，绝不覆盖
+- `/api/screen/stock_list` 返回 `degraded` / `reason`；`?force=1` 强制重拉
+- 消费方（`run_screen` / `start_screen_async` / `sentiment` / `app.py`）全部只吃列表，
+  故 `load_stock_list()` 签名保持不变，需要 meta 的走 `load_stock_list_meta()`
 
 ## 已知遗留
-- ROADMAP 第 4（锁依赖）/ 5（缓存治理）/ 6（app.py 瘦身）/ 7（历史 message 清理）待办
-- **第 5 项已重新定义**为「股票清单容错 + 缓存健康度」，spec 在
-  `specs/fix-stocklist-and-cache-health/`（三件套已出，待老陆点头后执行）
+- ROADMAP 第 4（锁依赖）/ 6（app.py 瘦身）/ 7（历史 message 清理）待办
 - 第 7 项风险高，须确认是单人仓库且其他机器无未推送改动
 - 全局 `~/.gitconfig` 里那两个错误配置（`http.proxy=127.0.0.1:8080`）**仍未清理**，
   只在本仓库用局部配置覆盖了。其他仓库若有联网操作异常，大概率同因
