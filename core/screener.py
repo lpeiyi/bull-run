@@ -5,6 +5,7 @@
 import os
 import time
 import json
+import logging
 import re
 from datetime import datetime
 
@@ -23,6 +24,14 @@ os.makedirs(_KLINE_DIR, exist_ok=True)
 
 _EM_SESSION = requests.Session()
 _EM_SESSION.headers.update({"User-Agent": UA})
+
+# 清单拉取容错参数（见 specs/fix-stocklist-and-cache-health/）
+_MIN_STOCK_COUNT = 2000      # 合理性下限：低于此判为拉取失败，不落库
+_PAGE_MAX_RETRY = 3          # 单页请求重试上限
+_MAX_CONSECUTIVE_FAIL = 3    # 连续失败页达到此数即判定网络不可用，提前结束拉取
+_LIST_VERSION = 2            # 清单缓存结构版本（v1=历史无 version 字段）
+
+_log = logging.getLogger(__name__)
 
 
 def _safe_float(v, default=0.0):
@@ -48,48 +57,123 @@ def _sina_get(node, page, num=100):
 
 # ── 全市场股票列表 ────────────────────────────────────
 
+def _read_stock_list_cache():
+    """读取本地清单缓存文件（不做时效判断）。
+
+    返回 (stocks, meta)：
+      - meta 即缓存文件顶层 dict（含 ts / version / complete）
+      - 文件不存在、损坏、或结构非法时返回 None
+    - 兼容旧格式：历史文件无 version/complete 字段，按 version=1、complete 视为缺失处理。
+    """
+    if not os.path.exists(_LIST_FILE):
+        return None
+    try:
+        with open(_LIST_FILE, encoding="utf-8") as f:
+            d = json.load(f)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(d, dict):
+        return None
+    stocks = d.get("stocks")
+    if not isinstance(stocks, list):
+        return None
+    return stocks, d
+
+
+def _write_stock_list_cache(stocks, ts):
+    """写入清单缓存（仅拉取完整时调用）。带 version/complete 标记。"""
+    payload = {"ts": ts, "version": _LIST_VERSION, "complete": True, "stocks": stocks}
+    try:
+        with open(_LIST_FILE, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False)
+    except OSError as e:
+        _log.error("[stocklist] 写入清单缓存失败：%s", e)
+
+
 def load_stock_list(force=False):
     """
     获取全市场 A 股列表（沪深京），缓存 24 小时
     返回 [{code, name, market, mcap_yi, fmcap_yi, industry, ...}]
-    """
-    now = time.time()
-    if not force and os.path.exists(_LIST_FILE):
-        try:
-            with open(_LIST_FILE, encoding="utf-8") as f:
-                d = json.load(f)
-            if now - d.get("ts", 0) < 24 * 3600:
-                return d.get("stocks", [])
-        except (OSError, ValueError):
-            pass
 
-    stocks = _fetch_sina_stock_list()
-    with open(_LIST_FILE, "w", encoding="utf-8") as f:
-        json.dump({"ts": now, "stocks": stocks}, f, ensure_ascii=False)
+    兼容原签名：只返回列表。需要感知「降级」状态时请用 load_stock_list_meta()。
+    """
+    stocks, _meta = load_stock_list_meta(force)
     return stocks
 
 
-def _fetch_sina_stock_list():
-    """从新浪财经分页拉全市场 A 股列表"""
-    node = "hs_a"  # 沪深A股（含北交所）
-    page_size = 100
-    max_page = 200  # 上限保护
-    all_data = []
+def load_stock_list_meta(force=False):
+    """获取全市场 A 股列表，并附带数据健康状况。
 
-    for page in range(1, max_page + 1):
-        try:
-            diff = _sina_get(node, page, page_size)
-        except Exception:
-            break
+    返回 (stocks, meta)，meta = {
+      "degraded":   bool,   # True 表示用的是降级缓存（非本次实时完整结果）
+      "count":      int,    # 返回条数
+      "fetched_at": float,  # 该数据的拉取时间戳
+      "reason":     str,    # degraded 时的原因说明
+    }
 
-        if not diff:
-            break
-        all_data.extend(diff)
-        if len(diff) < page_size:
-            break
+    判定顺序（见 specs/fix-stocklist-and-cache-health/design.md §3.1）：
+      1. 缓存未过期且已知完整（complete=True） → 直接用缓存
+      2. 实时拉取成功（ok=True）              → 写缓存并返回
+      3. 拉取失败 + 有旧缓存                  → 不覆盖缓存，回退旧缓存并标记降级
+      4. 拉取失败 + 无可用缓存                → 返回 [] 并记 error
 
+    注：旧版缓存（无 complete 字段）被视为「可能不完整」，不享受 24h 直用；
+    会尝试重新拉取，成功后即写为 v2 完整缓存。
+    """
+    now = time.time()
+    cached = _read_stock_list_cache()
+
+    if not force and cached is not None:
+        stocks, meta = cached
+        fresh = now - meta.get("ts", 0) < 24 * 3600
+        if fresh and meta.get("complete") is True:
+            return stocks, {
+                "degraded": False,
+                "count": len(stocks),
+                "fetched_at": meta.get("ts", 0),
+                "reason": "",
+            }
+
+    stocks, ok = _fetch_sina_stock_list()
+    if ok:
+        _write_stock_list_cache(stocks, now)
+        return stocks, {
+            "degraded": False,
+            "count": len(stocks),
+            "fetched_at": now,
+            "reason": "",
+        }
+
+    # 拉取不完整：不得覆盖原有缓存（AC-1.3）
+    if cached is not None and cached[0]:
+        old_stocks, old_meta = cached
+        old_ts = old_meta.get("ts", 0) or 0
+        when = (datetime.fromtimestamp(old_ts).strftime("%Y-%m-%d %H:%M")
+                if old_ts else "时间未知")
+        reason = "清单拉取失败，已回退到旧缓存（%s，%d 条，可能不完整）" % (when, len(old_stocks))
+        _log.error("[stocklist] %s", reason)
+        return old_stocks, {
+            "degraded": True,
+            "count": len(old_stocks),
+            "fetched_at": old_ts,
+            "reason": reason,
+        }
+
+    reason = "清单拉取失败且无可用缓存"
+    _log.error("[stocklist] %s，返回空清单", reason)
+    return [], {"degraded": True, "count": 0, "fetched_at": 0, "reason": reason}
+
+
+def _normalize_stock_rows(raw_items):
+    """新浪原始条目 → 标准结构（纯函数，无网络，便于脱网测试）。
+
+    字段映射与单位换算：
+      symbol → code（含市场前缀，如 sh600000）；code → pure_code（6 位）
+      mktcap / nmc：新浪单位为「万元」，转「亿元」
+      amount：新浪单位为「元」，转「亿元」
+    """
     out = []
-    for item in all_data:
+    for item in raw_items:
         symbol = item.get("symbol", "")   # 如 sh600000 / sz000001 / bj920000
         code = item.get("code", "")
         name = item.get("name", "")
@@ -126,6 +210,62 @@ def _fetch_sina_stock_list():
             "industry": "",   # 新浪接口暂无行业字段，由 _industry_map() 补充
         })
     return out
+
+
+def _fetch_sina_stock_list():
+    """从新浪财经分页拉全市场 A 股列表（含容错）。
+
+    返回 (stocks, ok)：
+      ok=True  —— 所有页均成功且条数达 _MIN_STOCK_COUNT 下限，可安全落库
+      ok=False —— 存在失败页或条数不足；stocks 仅供诊断，调用方不得写入缓存
+
+    容错策略（AC-1.1/1.2）：
+      - 单页失败按 1.5s / 3.0s 递增退避重试至多 _PAGE_MAX_RETRY 次；
+      - 仍失败则记 warning 并继续拉取后续页，不因单页异常终止；
+      - 连续失败页达 _MAX_CONSECUTIVE_FAIL 时判定网络不可用，提前结束（避免长时间空转）。
+    """
+    node = "hs_a"  # 沪深A股（含北交所）
+    page_size = 100
+    max_page = 200  # 上限保护
+    all_data = []
+    failed_pages = []
+    consecutive_fail = 0
+
+    for page in range(1, max_page + 1):
+        diff, last_err = None, None
+        for attempt in range(_PAGE_MAX_RETRY):
+            try:
+                diff = _sina_get(node, page, page_size)
+                break
+            except Exception as e:
+                last_err = e
+                if attempt < _PAGE_MAX_RETRY - 1:
+                    time.sleep(1.5 * (attempt + 1))   # 递增退避
+
+        if diff is None:
+            failed_pages.append(page)
+            consecutive_fail += 1
+            _log.warning("[stocklist] 第 %d 页重试 %d 次仍失败：%s",
+                         page, _PAGE_MAX_RETRY, last_err)
+            if consecutive_fail >= _MAX_CONSECUTIVE_FAIL:
+                _log.error("[stocklist] 连续 %d 页请求失败，判定网络不可用，提前结束拉取",
+                           consecutive_fail)
+                break
+            continue
+
+        consecutive_fail = 0
+        if not diff:
+            break
+        all_data.extend(diff)
+        if len(diff) < page_size:
+            break
+
+    out = _normalize_stock_rows(all_data)
+    ok = (not failed_pages) and (len(out) >= _MIN_STOCK_COUNT)
+    if not ok:
+        _log.error("[stocklist] 拉取不完整：失败页=%s 解析后条数=%d（下限 %d）",
+                   failed_pages or "无", len(out), _MIN_STOCK_COUNT)
+    return out, ok
 
 
 # ── 东财行业映射（补充新浪缺字段） ────────────────────────
