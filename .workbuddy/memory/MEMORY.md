@@ -15,21 +15,37 @@ A股 / 基金ETF 短线盯盘工具（「牛来」）。Flask 单页应用 + `co
   需要联网时须 `unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY` 并出沙箱执行
 
 ## git 推送（本机特有坑，已修，务必看这条）
-- git 用的是 WorkBuddy 自带 **PortableGit**
-  （`C:\Users\peiyilu\.workbuddy\binaries\PortableGit\versions\1.2.0`），非系统安装版
-- **两个历史坑曾导致 push 卡死 12 分钟无任何输出**：
-  1. 全局 `~/.gitconfig` 里写了 `http.proxy/https.proxy = http://127.0.0.1:8080`，
-     而本机该端口**并无服务**（系统代理其实是企业内网代理 `proxy.xn.petrochina:8080`，
-     它拒绝访问 GitHub 返回 503）
-  2. 全局 `credential.helper = helper-selector` 是个**弹窗选择器**，在无界面的后台调用时
-     会挂起 40+ 秒；且 `credential.helper` 是**累加型**配置，用 `-c credential.helper=wincred`
-     **无法覆盖**它，必须先 `-c credential.helper=` 置空重置
-- **已修**：在 repo 的 `.git/config` 里写了局部配置（不改全局）
-  - `http.proxy` / `https.proxy` 置空
-  - `credential.helper` = 先空值重置 + `wincred`（直读 Windows 凭据管理器里已有的
-    `git:https://github.com` 条目，无弹窗）
-- 现在 `git fetch` / `git push` **裸命令即可**，秒级完成；直连 GitHub 通
-  （企业代理走不通，直连反而正常）
+
+**默认用自适应脚本推拉，不要直接敲 git push：**
+```bash
+"C:/Users/peiyilu/AppData/Local/Programs/Python/Python312/python.exe" \
+  "C:/Users/peiyilu/.workbuddy/skills/windows-git-push-troubleshoot/scripts/git_net.py" \
+  push origin main
+```
+它会自动挑通道（本机代理 8080 / 系统代理 / 直连）并重试，且显式带上正确的
+代理与凭据参数，不受全局坏配置影响。
+
+### 网络事实（2026-09-27 实测，别再搞错）
+- **公司内网**：**必须开代理**才能访问 GitHub（老陆确认）。代理起时本机 8080 被占用
+- **家里**：代理关闭；GitHub **直连时通时不通**——连续 5 次仅 1 次成功，
+  其余在 TCP 建连阶段超时 15 秒。**不是配置问题，是线路本身不稳**
+- gitee 直连稳定（3/3，1.5~1.9s）；SSH over 443 本机无公钥，不可用
+
+### 两个坑（曾导致 push 卡死 12 分钟无输出）
+1. `credential.helper = helper-selector`（WorkBuddy 自带 PortableGit 的**弹窗选择器**），
+   无 GUI 后台调用时挂起 44 秒 —— 这是那次卡死的**真正主因，与网络无关**。
+   且该键是**累加型**，`-c credential.helper=wincred` **覆盖不掉**，
+   必须先 `-c credential.helper=` 置空重置再追加
+2. 全局 `http.proxy/https.proxy = http://127.0.0.1:8080` —— 公司环境该端口有代理、
+   家里没有。注意注册表里存的是 `proxy.xn.petrochina:8080`（公司服务器），
+   与配置里的 `127.0.0.1:8080`（本机）不是一回事
+
+### 已做的修复
+- **本仓库** `.git/config`：`http.proxy`/`https.proxy` 置空 +
+  `credential.helper` = 空值重置 + `wincred`（直读凭据管理器里已有的
+  `git:https://github.com`，无弹窗）→ 裸命令在家里可用
+- **全局 `~/.gitconfig` 未动**（公司需要代理，且全局改动须经老陆同意）：
+  里面那两个坏配置仍在，其他仓库若卡顿同因
 - 排障手法：`GIT_TRACE=1 GIT_CURL_VERBOSE=1 GIT_TERMINAL_PROMPT=0 timeout 45 git ... push --dry-run`
   输出到文件再看，能直接看到 401 → 调了哪个 helper → 卡在哪
 
