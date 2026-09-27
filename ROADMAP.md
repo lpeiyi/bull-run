@@ -55,7 +55,7 @@
 **做法**
 - 引入 `pytest`（装入系统 Python 3.12.10，与 `start.bat` 同环境），建 `tests/` 与 `pytest.ini`
 - `tests/conftest.py` 提供 autouse 的 socket 阻断夹具，**强制离线**；统一 K 线夹具
-- 四个测试文件共 **196 个用例**，覆盖 4 个模块：
+- 四个测试文件共 **196 个用例**（第 8 项实施后增至 **205** 个），覆盖 4 个模块：
   - `test_sentiment.py` — `_calc_score` 五维度与等级边界、`_is_dt_stock` 三档阈值
   - `test_indicators.py` — MA / MACD / KDJ / RSI / BOLL 数值与内部恒等式
   - `test_tdx.py` — 语法检查、公式求值、指标属性访问、可重复性
@@ -69,7 +69,7 @@
 2. `core/tdx.py` 项提取不识别 `[...]` 下标后缀，导致 `KDJ.J > 80`、`MACD.DIF > 0`、`BOLL.UP > C`
    这类「指标属性 + 比较运算」表达式畸形，选股公式**静默失效**（`get_signal` 吞掉异常返回 False）
 
-**验收**：`pytest` 一键跑通 196 用例、全绿、0.5 秒内结束；已做「改坏即变红」有效性自检
+**验收**：`pytest` 一键跑通（现有 **205** 个用例）、全绿、0.5 秒内结束；已做「改坏即变红」有效性自检
 **需求 / 设计 / 任务**：`specs/add-regression-tests/`
 **完成于**：本次提交（`fix(market)` + `fix(tdx)` + `refactor(market)` + `test`）
 
