@@ -1,11 +1,12 @@
 # -*- coding: utf-8 -*-
-"""core/sentiment.py 回归测试：_calc_score 五维度算法 + _is_dt_stock 跌停判定。
+"""core/sentiment.py 回归测试：_calc_score 五维度算法 + 涨跌停判定。
 
-对应 AC-2.1 ~ AC-2.10、AC-3.1 ~ AC-3.4。
+对应 AC-2.1 ~ AC-2.10、AC-3.1 ~ AC-3.4，
+以及 app / core 涨跌停阈值合并后的 limit_threshold / is_limit_stock 用例。
 """
 import pytest
 
-from core.sentiment import _calc_score, _is_dt_stock
+from core.sentiment import _calc_score, _is_dt_stock, is_limit_stock, limit_threshold
 
 CONTRIB_KEYS = {"涨停家数", "连板高度", "晋级率", "炸板率", "跌停惩罚"}
 
@@ -158,3 +159,81 @@ def test_is_dt_stock_none_change_pct():
     """AC-3.4: change_pct 为 None → False，不抛异常。"""
     stock = {"change_pct": None, "pure_code": "600000", "market": "sh"}
     assert _is_dt_stock(stock) is False
+
+
+# ── 涨跌停阈值判定（app / core 合并后新增的共享实现）────────────────
+# _is_dt_stock 现在是 is_limit_stock(stock, -1) 的薄包装，
+# 以下用例守护共享函数的正确性 + 两者等价性。
+
+@pytest.mark.parametrize("stock,expected", [
+    ({"market": "bj", "pure_code": "830001"}, 29.5),
+    ({"market": "sz", "pure_code": "300001"}, 19.5),
+    ({"market": "sh", "pure_code": "688001"}, 19.5),
+    ({"market": "sh", "pure_code": "600000"}, 9.8),
+    ({"market": "sz", "pure_code": "000001"}, 9.8),
+])
+def test_limit_threshold_three_tiers(stock, expected):
+    """三档阈值：北交所 29.5% / 创业板科创板 19.5% / 主板 9.8%。"""
+    assert limit_threshold(stock) == expected
+
+
+def test_limit_threshold_missing_fields_defaults_main_board():
+    """pure_code / market 均缺失 → 落到主板 9.8%，不抛异常。"""
+    assert limit_threshold({}) == 9.8
+
+
+@pytest.mark.parametrize("stock,threshold", [
+    ({"market": "bj", "pure_code": "830001"}, 29.5),
+    ({"market": "sz", "pure_code": "300001"}, 19.5),
+    ({"market": "sh", "pure_code": "600000"}, 9.8),
+])
+def test_is_limit_stock_both_directions(stock, threshold):
+    """正负方向：恰好触阈为 True，差 0.01 为 False（严格不等式，方向对称）。"""
+    up = dict(stock, change_pct=threshold)
+    up_off = dict(stock, change_pct=threshold - 0.01)
+    down = dict(stock, change_pct=-threshold)
+    down_off = dict(stock, change_pct=-(threshold - 0.01))
+
+    assert is_limit_stock(up, 1) is True
+    assert is_limit_stock(up_off, 1) is False
+    assert is_limit_stock(down, -1) is True
+    assert is_limit_stock(down_off, -1) is False
+    # 反向不误判：跌停价不触发涨停、涨停价不触发跌停
+    assert is_limit_stock(down, 1) is False
+    assert is_limit_stock(up, -1) is False
+
+
+@pytest.mark.parametrize("sign", [1, -1])
+def test_is_limit_stock_none_change_pct_both_signs(sign):
+    """change_pct 为 None → 两个方向均返回 False，不抛异常。"""
+    stock = {"change_pct": None, "pure_code": "600000", "market": "sh"}
+    assert is_limit_stock(stock, sign) is False
+
+
+def test_is_limit_stock_missing_change_pct_both_signs():
+    """change_pct 键缺失 → 两个方向均返回 False。"""
+    stock = {"pure_code": "600000", "market": "sh"}
+    assert is_limit_stock(stock, 1) is False
+    assert is_limit_stock(stock, -1) is False
+
+
+_SAMPLES = [
+    {"change_pct": -29.5, "pure_code": "830001", "market": "bj"},
+    {"change_pct": -30.0, "pure_code": "830002", "market": "bj"},
+    {"change_pct": -29.4, "pure_code": "830003", "market": "bj"},
+    {"change_pct": -19.5, "pure_code": "300001", "market": "sz"},
+    {"change_pct": -20.0, "pure_code": "688001", "market": "sh"},
+    {"change_pct": -19.4, "pure_code": "300002", "market": "sz"},
+    {"change_pct": -9.8, "pure_code": "600000", "market": "sh"},
+    {"change_pct": -10.02, "pure_code": "000001", "market": "sz"},
+    {"change_pct": -5.0, "pure_code": "601398", "market": "sh"},
+    {"change_pct": 9.9, "pure_code": "600000", "market": "sh"},
+    {"change_pct": None, "pure_code": "600000", "market": "sh"},
+    {"pure_code": "600000", "market": "sh"},
+]
+
+
+@pytest.mark.parametrize("stock", _SAMPLES)
+def test_is_dt_stock_equivalent_to_is_limit_stock_minus_one(stock):
+    """等价性：合并后 _is_dt_stock(stock) 必须恒等于 is_limit_stock(stock, -1)。"""
+    assert _is_dt_stock(stock) is is_limit_stock(stock, -1)

@@ -72,21 +72,40 @@ def _zb_count(date):
     return len(_em_pool("getTopicZBPool", date))
 
 
-def _is_dt_stock(stock):
-    """判断单只股票是否跌停。
+def limit_threshold(stock):
+    """该股的涨跌停幅度（正数百分比）。
+
+    规则：北交所(bj) 29.5%，创业板(300)/科创板(688) 19.5%，其余主板 9.8%。
+    """
+    if stock.get("market", "") == "bj":
+        return 29.5
+    pure_code = stock.get("pure_code", "")
+    if pure_code.startswith("300") or pure_code.startswith("688"):
+        return 19.5
+    return 9.8
+
+
+def is_limit_stock(stock, sign):
+    """按 sign 判断是否涨停(+1) / 跌停(-1)。
+
     依赖新浪 change_pct 字段（单位百分比，如 -10.02 表示跌 10.02%）。
-    规则：主板 <= -9.8%，创业板(300)/科创板(688) <= -19.5%，北交所(bj) <= -29.5%。
+    change_pct 缺失时返回 False。
     """
     pct = stock.get("change_pct")
     if pct is None:
         return False
-    pure_code = stock.get("pure_code", "")
-    market = stock.get("market", "")
-    if market == "bj":
-        return pct <= -29.5
-    if pure_code.startswith("300") or pure_code.startswith("688"):
-        return pct <= -19.5
-    return pct <= -9.8
+    threshold = limit_threshold(stock)
+    return pct >= threshold if sign > 0 else pct <= -threshold
+
+
+def _is_dt_stock(stock):
+    """判断单只股票是否跌停。
+    依赖新浪 change_pct 字段（单位百分比，如 -10.02 表示跌 10.02%）。
+    规则：主板 <= -9.8%，创业板(300)/科创板(688) <= -19.5%，北交所(bj) <= -29.5%。
+
+    等价于 is_limit_stock(stock, -1)，保留原签名以兼容既有调用方与用例。
+    """
+    return is_limit_stock(stock, -1)
 
 
 def _dt_list_sina():

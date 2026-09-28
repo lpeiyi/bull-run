@@ -161,19 +161,6 @@ def api_gold():
     return jsonify(data)
 
 
-def _is_limit_stock(s, sign):
-    """判断涨停(sign=1)/跌停(sign=-1)。与 sentiment._is_dt_stock 口径一致：
-    主板 +-9.8%，创业板(300)/科创板(688) +-19.5%，北交所 +-29.5%。"""
-    pct = s.get("change_pct")
-    if pct is None:
-        return False
-    pure_code = s.get("pure_code", "")
-    market = s.get("market", "")
-    threshold = 29.5 if market == "bj" else (
-        19.5 if pure_code.startswith("300") or pure_code.startswith("688") else 9.8)
-    return pct >= threshold if sign > 0 else pct <= -threshold
-
-
 @app.route("/api/market_distribution")
 def api_market_distribution():
     """全市场 A 股当日涨跌幅分布统计，9 个区间。支持 ?force=1 强制刷新股票列表缓存。"""
@@ -181,10 +168,10 @@ def api_market_distribution():
     # load_stock_list 自带 24 小时文件缓存，force=True 时强制重新拉取
     stocks = screener.load_stock_list(force=force)
 
-    # 涨停/跌停家数：基于 stocks 的 change_pct 按市场涨跌停阈值判定，
-    # 与 sentiment._is_dt_stock 口径一致；同时统计上涨/下跌家数供汇总进度条使用
-    zt_count = sum(1 for s in stocks if _is_limit_stock(s, 1))
-    dt_count = sum(1 for s in stocks if _is_limit_stock(s, -1))
+    # 涨停/跌停家数：基于 stocks 的 change_pct 按市场涨跌停阈值判定
+    # （sentiment.is_limit_stock）；同时统计上涨/下跌家数供汇总进度条使用
+    zt_count = sum(1 for s in stocks if sentiment.is_limit_stock(s, 1))
+    dt_count = sum(1 for s in stocks if sentiment.is_limit_stock(s, -1))
     up_count = sum(1 for s in stocks if (s.get("change_pct") or 0) > 0)
     down_count = sum(1 for s in stocks if (s.get("change_pct") or 0) < 0)
 
@@ -244,6 +231,8 @@ def api_emotion_trend():
 
 
 _LOW_NEXT_CACHE = {"ts": 0.0, "data": None}
+
+
 @app.route("/api/emotion_low_next")
 def api_emotion_low_next():
     """情绪低点(<=threshold) 下一交易日各指数涨跌幅 + 统计。?days=0 表示全部历史。600秒缓存。"""
