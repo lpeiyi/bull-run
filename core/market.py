@@ -641,3 +641,71 @@ def get_liangneng(days=20):
         "trend": [{"date": r["date"][5:], "amount": r["amount"]} for r in rows],
         "intraday": intraday,
     }
+
+
+# ── 全市场涨跌幅分布 ──────────────────────────────────────
+def build_distribution(stocks):
+    """全市场 A 股当日涨跌幅分布统计（9 个区间）+ 涨跌停/上涨/下跌家数。
+
+    入参 ``stocks`` 为 ``screener.load_stock_list()`` 的返回值
+    （list of dict，需含 ``change_pct``）。取数不放这里，故本函数是纯函数。
+
+    返回可直接 ``jsonify`` 的响应 dict。
+
+    归类用级联判断保证互斥（从高到低）::
+
+        >=7 / >=5 / >=2 / >=0.001 / >-0.001 / >=-2 / >=-5 / >=-7 / else
+
+    ``ranges`` 里的 ``min``/``max`` **仅作展示**，不参与归类。
+    "平盘"用严格不等式 ``-0.001 < pct < 0.001``；边界 ``0.001`` 归 ``0~2%``、
+    ``-0.001`` 归 ``-2~0%``。
+    """
+    from core.sentiment import is_limit_stock
+
+    zt_count = sum(1 for s in stocks if is_limit_stock(s, 1))
+    dt_count = sum(1 for s in stocks if is_limit_stock(s, -1))
+    # change_pct 缺失/None 走 `or 0`，既不计入上涨也不计入下跌
+    up_count = sum(1 for s in stocks if (s.get("change_pct") or 0) > 0)
+    down_count = sum(1 for s in stocks if (s.get("change_pct") or 0) < 0)
+
+    ranges = [
+        {"name": "≥7%", "min": 7, "count": 0},
+        {"name": "5~7%", "min": 5, "max": 7, "count": 0},
+        {"name": "2~5%", "min": 2, "max": 5, "count": 0},
+        {"name": "0~2%", "min": 0.001, "max": 2, "count": 0},
+        {"name": "平盘", "min": -0.001, "max": 0.001, "count": 0},
+        {"name": "-2~0%", "min": -2, "max": -0.001, "count": 0},
+        {"name": "-5~-2%", "min": -5, "max": -2, "count": 0},
+        {"name": "-7~-5%", "min": -7, "max": -5, "count": 0},
+        {"name": "≤-7%", "max": -7, "count": 0},
+    ]
+
+    for s in stocks:
+        pct = s.get("change_pct", 0)
+        if pct >= 7:
+            ranges[0]["count"] += 1
+        elif pct >= 5:
+            ranges[1]["count"] += 1
+        elif pct >= 2:
+            ranges[2]["count"] += 1
+        elif pct >= 0.001:
+            ranges[3]["count"] += 1    # 0~2%: 0.001 <= pct < 2
+        elif pct > -0.001:
+            ranges[4]["count"] += 1    # 平盘: -0.001 < pct < 0.001
+        elif pct >= -2:
+            ranges[5]["count"] += 1    # -2~0%: -2 <= pct <= -0.001
+        elif pct >= -5:
+            ranges[6]["count"] += 1
+        elif pct >= -7:
+            ranges[7]["count"] += 1
+        else:
+            ranges[8]["count"] += 1    # ≤-7%
+
+    return {
+        "ranges": ranges,
+        "total": len(stocks),
+        "zt_count": zt_count,
+        "dt_count": dt_count,
+        "up_count": up_count,
+        "down_count": down_count,
+    }

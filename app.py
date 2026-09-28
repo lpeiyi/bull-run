@@ -167,58 +167,8 @@ def api_market_distribution():
     force = request.args.get("force") == "1"
     # load_stock_list 自带 24 小时文件缓存，force=True 时强制重新拉取
     stocks = screener.load_stock_list(force=force)
-
-    # 涨停/跌停家数：基于 stocks 的 change_pct 按市场涨跌停阈值判定
-    # （sentiment.is_limit_stock）；同时统计上涨/下跌家数供汇总进度条使用
-    zt_count = sum(1 for s in stocks if sentiment.is_limit_stock(s, 1))
-    dt_count = sum(1 for s in stocks if sentiment.is_limit_stock(s, -1))
-    up_count = sum(1 for s in stocks if (s.get("change_pct") or 0) > 0)
-    down_count = sum(1 for s in stocks if (s.get("change_pct") or 0) < 0)
-
-    # 9 个涨跌幅区间（固定顺序；min/max 仅作展示用，归类用下方级联判断保证互斥）
-    ranges = [
-        {"name": "≥7%", "min": 7, "count": 0},
-        {"name": "5~7%", "min": 5, "max": 7, "count": 0},
-        {"name": "2~5%", "min": 2, "max": 5, "count": 0},
-        {"name": "0~2%", "min": 0.001, "max": 2, "count": 0},
-        {"name": "平盘", "min": -0.001, "max": 0.001, "count": 0},
-        {"name": "-2~0%", "min": -2, "max": -0.001, "count": 0},
-        {"name": "-5~-2%", "min": -5, "max": -2, "count": 0},
-        {"name": "-7~-5%", "min": -7, "max": -5, "count": 0},
-        {"name": "≤-7%", "max": -7, "count": 0},
-    ]
-
-    # 从高到低级联判断：每只股票只计入一个区间
-    # 平盘区间用严格不等式 -0.001 < pct < 0.001，边界值 0.001 归 0~2%、-0.001 归 -2~0%
-    for s in stocks:
-        pct = s.get("change_pct", 0)
-        if pct >= 7:
-            ranges[0]["count"] += 1
-        elif pct >= 5:
-            ranges[1]["count"] += 1
-        elif pct >= 2:
-            ranges[2]["count"] += 1
-        elif pct >= 0.001:
-            ranges[3]["count"] += 1   # 0~2%: 0.001 <= pct < 2
-        elif pct > -0.001:
-            ranges[4]["count"] += 1    # 平盘: -0.001 < pct < 0.001
-        elif pct >= -2:
-            ranges[5]["count"] += 1    # -2~0%: -2 <= pct <= -0.001
-        elif pct >= -5:
-            ranges[6]["count"] += 1
-        elif pct >= -7:
-            ranges[7]["count"] += 1
-        else:
-            ranges[8]["count"] += 1    # ≤-7%
-
-    return jsonify({
-        "ranges": ranges,
-        "total": len(stocks),
-        "zt_count": zt_count,
-        "dt_count": dt_count,
-        "up_count": up_count,
-        "down_count": down_count,
-    })
+    # 取数（含 force 语义）留在路由，统计在 core（market.build_distribution）
+    return jsonify(market.build_distribution(stocks))
 
 
 @app.route("/api/emotion_trend")
