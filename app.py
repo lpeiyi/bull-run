@@ -234,101 +234,16 @@ def api_market_distribution():
     })
 
 
-# 情绪趋势图里可叠加对比的指数
-INDEX_TREND = [
-    ("sh000001", "上证指数"),
-    ("sh000905", "中证500"),
-    ("sh000688", "科创50"),
-    ("sz399006", "创业板指"),
-    ("sh000300", "沪深300"),
-]
-
-
 @app.route("/api/emotion_trend")
 def api_emotion_trend():
     """历史情绪分序列 + 叠加指数归一化曲线。
     默认近15日，可用 ?days=N 拉长（N<=0 表示全部历史）。"""
     force = request.args.get("force") == "1"
     days = int(request.args.get("days", 15))
-    trend = emotion_history.get_emotion_trend(days, force=force)
-    dates = [t["date"] for t in trend]
-    # 指数叠加覆盖同等长度（腾讯日K接口单次上限约1000根）
-    kline_days = 1000 if days <= 0 else min(days + 20, 1000)
-    indexes = []
-    for code, name in INDEX_TREND:
-        try:
-            df = kline(code, days=kline_days)
-            m = {d.strftime("%Y%m%d"): float(c) for d, c in zip(df["date"], df["close"])}
-        except Exception:
-            continue
-        vals = [m.get(d) for d in dates]
-        base = next((v for v in vals if v), None)
-        if not base:
-            continue
-        indexes.append({
-            "name": name,
-            "values": [round(v / base * 100, 2) if v else None for v in vals],
-        })
-    # ═══════════════════════════════════════════════════════════════
-    # latest 强制实时，不依赖整日缓存（可能 trend[-1] 仍是昨日=83/0/6.7%）。
-    # 前端短线情绪卡片只读取 t.latest，必须覆盖为实时 sentiment.get_sentiment()。
-    # ═══════════════════════════════════════════════════════════════
-    latest = dict(trend[-1]) if trend else {}
-    try:
-        s = sentiment.get_sentiment()  # 实时：乐咕优先 + 东财回退
-        enriched = emotion_history.enrich_sentiment(s)  # 补齐 history_scores / history_labels / prev_score
-        # 日期格式统一：emotion_history.enrich_sentiment 返回的 enriched["date"] 是 YYYY-MM-DD，
-        # latest 的 date 应与 trend 元素一致（get_emotion_trend 返回的是 YYYYMMDD 字符串）。
-        td_raw = s.get("trade_date")  # YYYYMMDD（与 v2 / _find_recent_trade_date 格式一致）
-        latest.update({
-            "score": enriched.get("score"),
-            "level": enriched.get("level"),
-            "date": td_raw if td_raw else latest.get("date"),  # latest 原格式 YYYYMMDD
-            "trade_date": td_raw,
-            "zt_count": s.get("zt_count"),
-            "dt_count": s.get("dt_count"),
-            "zb_count": s.get("zb_count"),
-            "break_rate": s.get("break_rate"),
-            "promo_rate": s.get("promo_rate"),
-            "max_height": s.get("max_height"),
-            "contributions": s.get("contributions") or enriched.get("contributions", {}),
-            "history_scores": enriched.get("history_scores", []),
-            "history_labels": enriched.get("history_labels", []),
-            "prev_score": enriched.get("prev_score"),
-        })
-    except Exception:
-        pass  # 失败保留原默认 trend[-1]
-    return jsonify({
-        "dates": dates,
-        "labels": [t["label"] for t in trend],
-        "scores": [t["score"] for t in trend],
-        "zt_count": [t["zt_count"] for t in trend],
-        "dt_count": [t.get("dt_count", 0) for t in trend],
-        "break_rate": [t["break_rate"] for t in trend],
-        "promo_rate": [t["promo_rate"] for t in trend],
-        "max_height": [t["max_height"] for t in trend],
-        "levels": [t["level"] for t in trend],
-        "contributions": [t.get("contributions") or {} for t in trend],  # 每日五维度贡献度，前端 latest 条渲染条形图
-        "indexes": indexes,
-        "latest": latest,
-    })
+    return jsonify(emotion_history.get_trend_view(days, force=force))
 
 
 _LOW_NEXT_CACHE = {"ts": 0.0, "data": None}
-_IDX_CLOSE_CACHE = {}
-
-
-def _idx_closes(code):
-    """拉全量指数日K并缓存 {YYYYMMDD: close}，失败返回空 dict"""
-    if code not in _IDX_CLOSE_CACHE:
-        try:
-            df = kline_range(code, start="2020-01-01")
-            _IDX_CLOSE_CACHE[code] = {d.strftime("%Y%m%d"): float(c) for d, c in zip(df["date"], df["close"])}
-        except Exception:
-            _IDX_CLOSE_CACHE[code] = {}
-    return _IDX_CLOSE_CACHE[code]
-
-
 @app.route("/api/emotion_low_next")
 def api_emotion_low_next():
     """情绪低点(<=threshold) 下一交易日各指数涨跌幅 + 统计。?days=0 表示全部历史。600秒缓存。"""
@@ -341,38 +256,7 @@ def api_emotion_low_next():
             and _LOW_NEXT_CACHE["data"].get("_k") == key):
         return jsonify(_LOW_NEXT_CACHE["data"])
 
-    lows = emotion_history.get_low_points(threshold, days)
-    indexes = []
-    for code, name in INDEX_TREND:
-        closes = _idx_closes(code)
-        if not closes:
-            continue
-        dates_sorted = sorted(closes)
-        pos = {d: i for i, d in enumerate(dates_sorted)}
-        items, valid = [], []
-        for ld in lows:
-            d = ld["date"]
-            base = closes.get(d)
-            i = pos.get(d)
-            ret = nd = None
-            if base is not None and i is not None and i + 1 < len(dates_sorted):
-                nd = dates_sorted[i + 1]
-                ret = round((closes[nd] / base - 1) * 100, 2)
-                valid.append(ret)
-            items.append({"date": d, "next_date": nd, "ret": ret})
-        n = len(valid)
-        avg = round(sum(valid) / n, 2) if n else None
-        win = round(sum(1 for r in valid if r > 0) / n * 100, 1) if n else None
-        indexes.append({"name": name, "items": items, "stats": {"n": n, "avg": avg, "win_rate": win}})
-
-    data = {
-        "_k": key,
-        "threshold": threshold,
-        "days": days,
-        "low_dates": [x["date"] for x in lows],
-        "low_scores": [x["score"] for x in lows],
-        "indexes": indexes,
-    }
+    data = emotion_history.get_low_next_view(threshold, days)
     _LOW_NEXT_CACHE["ts"] = now
     _LOW_NEXT_CACHE["data"] = data
     return jsonify(data)
