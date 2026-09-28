@@ -8,7 +8,6 @@ import os
 import threading
 import time
 from collections import Counter
-from datetime import datetime
 
 import pandas as pd
 
@@ -81,89 +80,6 @@ def api_quotes():
 _OVERVIEW_CACHE = {"ts": 0.0, "data": None}
 
 
-def _enrich_sentiment(s):
-    scores = []
-    labels = []
-    trend = []
-    prev_score = None
-
-    # 日期归一化：sentiment 返回的 trade_date 可能是 YYYYMMDD，统一转 YYYY-MM-DD
-    def _today():
-        d = s.get("trade_date") or datetime.now().strftime("%Y-%m-%d")
-        if len(d) == 8 and "-" not in d:
-            d = f"{d[:4]}-{d[4:6]}-{d[6:8]}"
-        return d
-
-    # Task 17：将任意 score 值安全转换为 0~100 的 int，异常兜底 50
-    def _to_score(v):
-        try:
-            n = int(v)
-            if n < 0 or n > 100:
-                return 50
-            return n
-        except (TypeError, ValueError):
-            try:
-                n = int(float(v))
-                if n < 0 or n > 100:
-                    return 50
-                return n
-            except (TypeError, ValueError):
-                return 50
-
-    try:
-        trend = emotion_history.get_emotion_trend(20)
-        if len(trend) < 3:
-            trend = emotion_history.get_emotion_trend(20, force=True)
-    except Exception:
-        trend = []
-    try:
-        if len(trend) < 1 and s.get("score") is not None:
-            today_date = _today()
-            today_label = today_date[5:]
-            trend = [{"date": today_date, "label": today_label, "score": _to_score(s["score"])}]
-        if len(trend) < 1:
-            today_date = _today()
-            today_label = today_date[5:]
-            trend = [{"date": today_date, "label": today_label, "score": 50}]
-        if s.get("score") is not None:
-            today_date = _today()
-            last_date = trend[-1].get("date", "") if trend else ""
-            if last_date != today_date:
-                today_label = today_date[5:]
-                trend.append({"date": today_date, "label": today_label, "score": _to_score(s["score"])})
-        # Task 17：scores 每个元素都强制 _to_score（兜底 int），杜绝字符串/None 进 series.data
-        scores = [_to_score(t.get("score", 50)) for t in trend]
-        labels = [t.get("label", t.get("date", "")[5:] if t.get("date") else "") for t in trend]
-        if len(scores) > 15:
-            scores = scores[-15:]
-            labels = labels[-15:]
-        min_len = min(len(scores), len(labels))
-        scores = scores[:min_len]
-        labels = labels[:min_len]
-        today_date = _today()
-        last_date = trend[-1].get("date", "") if trend else ""
-        if last_date == today_date:
-            prev_score = scores[-2] if len(scores) >= 2 else None
-        else:
-            prev_score = scores[-2] if len(scores) >= 2 else None
-    except Exception:
-        today_date = _today()
-        today_label = today_date[5:]
-        scores = [50]
-        labels = [today_label]
-        prev_score = None
-    # 单点不可见修复：ECharts line 仅 1 个点不画线，复制为 2 个相同点画出水平短线
-    if len(scores) == 1:
-        scores = scores * 2
-        labels = labels * 2
-    # Task 17：返回前最后一道强制校验（兜底保险）
-    scores = [_to_score(v) for v in scores]
-    s["history_scores"] = scores
-    s["history_labels"] = labels
-    s["prev_score"] = prev_score
-    return s
-
-
 @app.route("/api/overview")
 def api_overview():
     """市场概览：指数 + 情绪 + 涨停/炸板/跌停池 + 板块，60秒缓存"""
@@ -179,7 +95,7 @@ def api_overview():
         cached = _OVERVIEW_CACHE["data"]
     # sentiment 始终实时（不走缓存）
     s = sentiment.get_sentiment()
-    enriched_sent = _enrich_sentiment(s)
+    enriched_sent = emotion_history.enrich_sentiment(s)
     if cached is not None:
         # 只替换 sentiment，其余用缓存
         cached["sentiment"] = enriched_sent
@@ -360,8 +276,8 @@ def api_emotion_trend():
     latest = dict(trend[-1]) if trend else {}
     try:
         s = sentiment.get_sentiment()  # 实时：乐咕优先 + 东财回退
-        enriched = _enrich_sentiment(s)  # 补齐 history_scores / history_labels / prev_score
-        # 日期格式统一：_enrich_sentiment 返回的 enriched["date"] 是 YYYY-MM-DD，
+        enriched = emotion_history.enrich_sentiment(s)  # 补齐 history_scores / history_labels / prev_score
+        # 日期格式统一：emotion_history.enrich_sentiment 返回的 enriched["date"] 是 YYYY-MM-DD，
         # latest 的 date 应与 trend 元素一致（get_emotion_trend 返回的是 YYYYMMDD 字符串）。
         td_raw = s.get("trade_date")  # YYYYMMDD（与 v2 / _find_recent_trade_date 格式一致）
         latest.update({

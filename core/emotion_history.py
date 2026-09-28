@@ -130,3 +130,89 @@ def get_low_points(threshold=30, days=0):
     """近 days 个交易日中情绪分 <= threshold 的冰点日（days<=0 表示全部历史），升序 [{date, score}]"""
     trend = get_emotion_trend(days=days)
     return [{"date": t["date"], "score": t["score"]} for t in trend if t["score"] <= threshold]
+
+# ── 实时情绪的视图组装 ────────────────────────────────
+# 原 app._enrich_sentiment，为让情绪视图逻辑可离线测试而下沉
+# （见 specs/slim-app-routes/）。搬迁保持逐行等价，未改任何分支与兜底值。
+
+def enrich_sentiment(s):
+    scores = []
+    labels = []
+    trend = []
+    prev_score = None
+
+    # 日期归一化：sentiment 返回的 trade_date 可能是 YYYYMMDD，统一转 YYYY-MM-DD
+    def _today():
+        d = s.get("trade_date") or datetime.now().strftime("%Y-%m-%d")
+        if len(d) == 8 and "-" not in d:
+            d = f"{d[:4]}-{d[4:6]}-{d[6:8]}"
+        return d
+
+    # Task 17：将任意 score 值安全转换为 0~100 的 int，异常兜底 50
+    def _to_score(v):
+        try:
+            n = int(v)
+            if n < 0 or n > 100:
+                return 50
+            return n
+        except (TypeError, ValueError):
+            try:
+                n = int(float(v))
+                if n < 0 or n > 100:
+                    return 50
+                return n
+            except (TypeError, ValueError):
+                return 50
+
+    try:
+        trend = get_emotion_trend(20)
+        if len(trend) < 3:
+            trend = get_emotion_trend(20, force=True)
+    except Exception:
+        trend = []
+    try:
+        if len(trend) < 1 and s.get("score") is not None:
+            today_date = _today()
+            today_label = today_date[5:]
+            trend = [{"date": today_date, "label": today_label, "score": _to_score(s["score"])}]
+        if len(trend) < 1:
+            today_date = _today()
+            today_label = today_date[5:]
+            trend = [{"date": today_date, "label": today_label, "score": 50}]
+        if s.get("score") is not None:
+            today_date = _today()
+            last_date = trend[-1].get("date", "") if trend else ""
+            if last_date != today_date:
+                today_label = today_date[5:]
+                trend.append({"date": today_date, "label": today_label, "score": _to_score(s["score"])})
+        # Task 17：scores 每个元素都强制 _to_score（兜底 int），杜绝字符串/None 进 series.data
+        scores = [_to_score(t.get("score", 50)) for t in trend]
+        labels = [t.get("label", t.get("date", "")[5:] if t.get("date") else "") for t in trend]
+        if len(scores) > 15:
+            scores = scores[-15:]
+            labels = labels[-15:]
+        min_len = min(len(scores), len(labels))
+        scores = scores[:min_len]
+        labels = labels[:min_len]
+        today_date = _today()
+        last_date = trend[-1].get("date", "") if trend else ""
+        if last_date == today_date:
+            prev_score = scores[-2] if len(scores) >= 2 else None
+        else:
+            prev_score = scores[-2] if len(scores) >= 2 else None
+    except Exception:
+        today_date = _today()
+        today_label = today_date[5:]
+        scores = [50]
+        labels = [today_label]
+        prev_score = None
+    # 单点不可见修复：ECharts line 仅 1 个点不画线，复制为 2 个相同点画出水平短线
+    if len(scores) == 1:
+        scores = scores * 2
+        labels = labels * 2
+    # Task 17：返回前最后一道强制校验（兜底保险）
+    scores = [_to_score(v) for v in scores]
+    s["history_scores"] = scores
+    s["history_labels"] = labels
+    s["prev_score"] = prev_score
+    return s
