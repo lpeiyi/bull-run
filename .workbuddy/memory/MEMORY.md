@@ -61,10 +61,11 @@ A股 / 基金ETF 短线盯盘工具（「牛来」）。Flask 单页应用 + `co
 
 ## 回归测试（ROADMAP 第 3 项，已完成）
 - 运行：项目根执行 `"C:\Users\peiyilu\AppData\Local\Programs\Python\Python312\python.exe" -m pytest`
-- **252 个用例**，**离线可跑**（`tests/conftest.py` 用 autouse 夹具阻断 socket），约 2 秒
-- 覆盖 `sentiment` / `indicators` / `tdx` / `market` / `screener`(清单容错) 及 `scripts/cache_health.py`，
+- **267 个用例**，**离线可跑**（`tests/conftest.py` 用 autouse 夹具阻断 socket），约 1.5~9 秒
+- 覆盖 `sentiment` / `indicators` / `tdx` / `market` / `screener`(清单容错) /
+  `scripts/cache_health.py` / `scripts/check_deps.py` 及 `start.bat` 启动链路契约，
   需求见 `specs/add-regression-tests/`、`specs/fix-boards-source-selection/`、
-  `specs/fix-stocklist-and-cache-health/`
+  `specs/fix-stocklist-and-cache-health/`、`specs/lock-dependency-versions/`
 - **改 `core/` 里任何算法后必须先跑一遍**再交付
 - `scripts/` 下的脚本两类：**联网契约校验**（接口是否还在、字段有没有变）与**缓存体检运维**，
   与测试的分工不同
@@ -112,8 +113,26 @@ A股 / 基金ETF 短线盯盘工具（「牛来」）。Flask 单页应用 + `co
 - 消费方（`run_screen` / `start_screen_async` / `sentiment` / `app.py`）全部只吃列表，
   故 `load_stock_list()` 签名保持不变，需要 meta 的走 `load_stock_list_meta()`
 
+## 依赖管理（ROADMAP 第 4 项，已完成）
+- `requirements.txt` 是**精确锁定**（`==`）的，只有 4 项直接依赖，**不是**下限约束：
+  `requests==2.34.2` / `flask==3.1.3` / `numpy==2.4.6` / `pandas==3.0.3`
+- 开发/测试依赖另在 `requirements-dev.txt`（`-r requirements.txt` + `pytest==9.1.1`）
+- 核查手段：`python scripts/check_deps.py`（逐包比对，不一致退出码 1）/
+  `python scripts/check_deps.py --missing`（只判「包在不在」，供 `start.bat` 调用）
+- `start.bat` 已是「**先探测、缺了才装**」：依赖齐备直接启动、**断网也能起**；
+  只在真缺包时才联网安装。（配套原因：`==` 之后若无条件 pip install，
+  本机版本与 pin 有偏差时每次启动都要联网，断网反而起不来）
+- **改 pin 的纪律**：先改文件 → 装 → 跑通 `pytest` → 才提交，三步缺一不可
+- 两道守门用例别删：`test_check_deps.py::test_project_requirements_fully_pinned`
+  （往 `requirements.txt` 写回 `>=` 会直接变红）、
+  `test_startup.py::test_start_bat_checks_before_installing`（探测逻辑被删会变红）
+- **别用记事本改 `start.bat`**：cmd 按 GBK 解析，中文注释/BOM 会让首行失效并报「找不到路径」。
+  注释一律英文，`test_startup.py` 里三道用例守着
+
 ## 已知遗留
-- ROADMAP 第 4（锁依赖）/ 6（app.py 瘦身）/ 7（历史 message 清理）待办
+- ROADMAP 第 6（app.py 瘦身）/ 7（历史 message 清理）待办
+- 第 4 项「干净机器上按锁定版本一次装好并启动」**未验证**（无第二台机器），
+  只做了 `pip check` / 逐项比对 / `--missing` 退出码等替代验证；日后有机器应补做
 - 第 7 项风险高，须确认是单人仓库且其他机器无未推送改动
 - 全局 `~/.gitconfig` 里那两个错误配置（`http.proxy=127.0.0.1:8080`）**仍未清理**，
   只在本仓库用局部配置覆盖了。其他仓库若有联网操作异常，大概率同因

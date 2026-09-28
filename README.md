@@ -4,12 +4,13 @@
 
 ## 快速开始
 
-1. 先装一次依赖（仅第一次）：
-   ```
-   pip install -r requirements.txt
-   ```
-2. 双击 `start.bat`，浏览器会自动打开 `http://127.0.0.1:8000`。
-3. 用完直接关闭那个黑色窗口即可。
+1. 双击 `start.bat`，浏览器会自动打开 `http://127.0.0.1:8000`。
+   首次运行会自动检测并安装依赖（需联网）；之后每次启动只做一次**本地**探测，
+   依赖齐备就直接启动，**断网也能用**。
+2. 用完直接关闭那个黑色窗口即可。
+
+依赖版本已精确锁定在 `requirements.txt`。手工安装用 `pip install -r requirements.txt`；
+要跑测试的开发环境用 `pip install -r requirements-dev.txt`。
 
 ## 三个 tab
 
@@ -111,15 +112,32 @@
 
 ## 开发与测试
 
-回归测试覆盖情绪分算法、技术指标、通达信公式解释器、板块选源逻辑与选股清单容错，**全部离线可跑**（不会发起网络请求）。
+回归测试覆盖情绪分算法、技术指标、通达信公式解释器、板块选源逻辑、选股清单容错、
+缓存体检判定与依赖核查，**全部离线可跑**（不会发起网络请求）。
 
 ```
-# 首次准备：用 start.bat 指定的同一个 Python 装 pytest
-"C:\Users\peiyilu\AppData\Local\Programs\Python\Python312\python.exe" -m pip install pytest
+# 首次准备：装测试依赖（运行依赖 + pytest）
+"C:\Users\peiyilu\AppData\Local\Programs\Python\Python312\python.exe" -m pip install -r requirements-dev.txt
 
 # 运行（在项目根目录）
 "C:\Users\peiyilu\AppData\Local\Programs\Python\Python312\python.exe" -m pytest
 ```
+
+### 依赖核查
+
+`requirements.txt` 是**精确锁定**（`==`）的，不是下限约束。想确认"文件里锁的版本"与
+"本机装的版本"是否一致：
+
+```
+# 逐包比对（有缺失或版本不符则退出码 1）
+python scripts/check_deps.py
+
+# 只判断有没有包没装（start.bat 用的就是这个）
+python scripts/check_deps.py --missing
+```
+
+升级依赖的纪律：**先改文件、再装、再跑 pytest**，三步都过了才提交。
+别只改文件不装 —— 那会得到一个"看起来已锁定、实际没生效"的假安全。
 
 改动 `core/` 里的算法后跑一遍，能立刻知道有没有弄坏既有逻辑。测试用例见 `tests/`，
 需求 / 设计 / 任务见 `specs/add-regression-tests/`。
@@ -185,12 +203,14 @@ bull-run/
 ├── app.py                    # Flask 入口，路由 + API + 后台定时任务
 ├── config.example.json       # 示例配置模板（自选/飞书/推送规则）
 ├── indicators.json           # 选股策略（通达信公式 + 配置）
-├── requirements.txt          # Python 依赖
-├── start.bat                 # Windows 启动脚本
+├── requirements.txt          # 运行依赖（精确锁定版本）
+├── requirements-dev.txt      # 开发/测试依赖（运行依赖 + pytest）
+├── start.bat                 # Windows 启动脚本（先探测依赖，缺了才联网安装）
 ├── pytest.ini                # 测试配置（testpaths / pythonpath）
 ├── ROADMAP.md                # 非功能性改进计划
 ├── specs/                    # 需求 · 设计 · 任务（spec 工作流产物）
-├── scripts/                  # 运维/核验脚本（接口契约校验、缓存体检与清理）
+├── scripts/                  # 运维/核验脚本（依赖核查、接口契约校验、缓存体检与清理）
+│   ├── check_deps.py         # 依赖核查（报告模式 / --missing 供 start.bat 调用）
 │   ├── verify_boards.py      # 板块榜接口契约校验
 │   ├── diag_boards.py        # 板块数据诊断
 │   └── cache_health.py       # K 线缓存体检 report / 清理 clean
@@ -201,7 +221,9 @@ bull-run/
 │   ├── test_tdx.py           # 通达信公式解释器
 │   ├── test_market_boards.py # 板块双源选源与清洗排序
 │   ├── test_screener_stocklist.py  # 清单拉取容错 / 降级回退 / 三市齐全
-│   └── test_cache_health.py  # 缓存体检统计与清理判定
+│   ├── test_cache_health.py  # 缓存体检统计与清理判定
+│   ├── test_check_deps.py    # 依赖核查脚本 + requirements.txt 锁定守门
+│   └── test_startup.py       # start.bat 编码与启动链路契约
 ├── core/                     # 后端核心
 │   ├── data.py               # 行情/K线数据层（腾讯+新浪）
 │   ├── market.py             # 市场概览：指数 / 涨停池 / 板块 / 市场量能（KPL 校准权重 9 锚点预测 + ±30% clamp + 241 分钟分时连续）
