@@ -31,6 +31,16 @@ A股 / 基金ETF 短线盯盘工具（「牛来」）。Flask 单页应用 + `co
   其余在 TCP 建连阶段超时 15 秒。**不是配置问题，是线路本身不稳**
 - gitee 直连稳定（3/3，1.5~1.9s）；SSH over 443 本机无公钥，不可用
 
+### 远端仓库事实（2026-09-28 核实）
+- `origin` = `https://github.com/lpeiyi/bull-run.git`，分支仅 `main`，无标签
+- 仓库 **public**、`forks_count = 0`、全部提交作者均为 `lpeiyi`（单人仓库）
+- 公司环境系统代理 = `proxy.xn.petrochina:8080`（注册表 `ProxyEnable=1`）；
+  自适应脚本第 1 轮即命中「系统代理」通道
+- **`gh` CLI 本机未安装** → 查仓库可见性/fork 须走 REST API（注册表读代理 + `urllib`）
+- **`git filter-repo` 未安装**；内置 `git filter-branch` 可用（git 2.55.0，已废弃会告警）
+- 别用**沙箱内**的 `git fetch` 核实推送结果 —— 沙箱连不了外网会误报失败；
+  用 `git log origin/main..HEAD` 是否为 0 来核对
+
 ### 两个坑（曾导致 push 卡死 12 分钟无输出）
 1. `credential.helper = helper-selector`（WorkBuddy 自带 PortableGit 的**弹窗选择器**），
    无 GUI 后台调用时挂起 44 秒 —— 这是那次卡死的**真正主因，与网络无关**。
