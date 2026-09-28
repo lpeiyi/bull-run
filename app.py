@@ -14,7 +14,7 @@ import pandas as pd
 from flask import Flask, render_template, request, jsonify
 
 from core import backtest, emotion_history, gold, market, rules, sentiment, screener
-from core.data import real_quotes, kline, kline_range
+from core.data import real_quotes, kline
 from core.notifier import send_feishu
 from core.tdx import check_tdx_syntax
 
@@ -264,8 +264,7 @@ def api_index_kline():
 @app.route("/api/index_compare")
 def api_index_compare():
     """4 指数近 N 日归一化叠加对比（N=15/30/60），按档位分缓存，600秒 TTL。force=1 跳过缓存。"""
-    codes = ["sh000001", "sz399001", "sz399006", "sh000300"]
-    names = ["上证指数", "深证成指", "创业板指", "沪深300"]
+    # days 合法化与 HTTP 缓存留在路由；归一化计算在 core（market.get_index_compare）
     days = int(request.args.get("days", 60))
     if days not in (15, 30, 60):
         days = 60
@@ -275,43 +274,7 @@ def api_index_compare():
     if not force and cache["data"] and now - cache["ts"] < 600:
         return jsonify(cache["data"])
 
-    idx_maps = []
-    for code in codes:
-        try:
-            df = kline(code, days=days + 10)
-            m = {d.strftime("%Y%m%d"): float(c) for d, c in zip(df["date"], df["close"])}
-            idx_maps.append(m)
-        except Exception:
-            idx_maps.append({})
-
-    common_dates = None
-    for m in idx_maps:
-        if not m:
-            continue
-        keys = set(m.keys())
-        if common_dates is None:
-            common_dates = keys
-        else:
-            common_dates = common_dates & keys
-    if common_dates is None:
-        common_dates = set()
-
-    dates = sorted(common_dates)[-days:]
-    series = []
-    for i, (code, name) in enumerate(zip(codes, names)):
-        m = idx_maps[i]
-        if not m:
-            continue
-        vals = [m.get(d) for d in dates]
-        base = next((v for v in vals if v), None)
-        if not base:
-            continue
-        series.append({
-            "name": name,
-            "values": [round(v / base * 100, 2) if v else None for v in vals],
-        })
-
-    data = {"dates": dates, "series": series}
+    data = market.get_index_compare(days)
     cache["ts"] = now
     cache["data"] = data
     return jsonify(data)

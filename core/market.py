@@ -15,7 +15,7 @@ from datetime import datetime, timedelta
 
 import requests
 
-from core.data import UA, real_quotes, to_symbol
+from core.data import UA, real_quotes, to_symbol, kline
 
 EM_SESSION = requests.Session()
 EM_SESSION.headers.update({"User-Agent": UA})
@@ -709,3 +709,73 @@ def build_distribution(stocks):
         "up_count": up_count,
         "down_count": down_count,
     }
+
+
+# ── 多指数归一化对比 ──────────────────────────────────────
+# 指数对比页固定展示的 4 个指数，顺序即前端图例顺序。
+# ⚠️ 与情绪曲线叠加用的那组指数（5 个，在 emotion_history.INDEX_TREND）
+#    不是同一个列表，用途不同，**不得合并**。
+INDEX_COMPARE = [
+    ("sh000001", "上证指数"),
+    ("sz399001", "深证成指"),
+    ("sz399006", "创业板指"),
+    ("sh000300", "沪深300"),
+]
+
+
+def get_index_compare(days):
+    """4 指数近 ``days`` 日归一化叠加。
+
+    ``days`` 由调用方保证已是合法档位（15/30/60）—— 本函数不做规范化，
+    因为"允许哪几档"是 HTTP 层的展示约定。
+
+    返回 ``{"dates": [...], "series": [{"name": ..., "values": [...]}]}``，
+    可直接 ``jsonify``。
+
+    原样保留的行为：
+
+    - 取各指数交易日的**交集**；某指数取数抛异常或结果为空则**跳过**它；
+      全部为空时交集是**空集合**（``set()``，不是 ``None``）；
+    - 归一化以该系列**首个非零值**为基数 → 首值恒为 100，缺失日给 ``None``；
+    - 单个指数失败不影响其它指数，也不向上抛错。
+    """
+    codes = [c for c, _ in INDEX_COMPARE]
+    names = [n for _, n in INDEX_COMPARE]
+
+    idx_maps = []
+    for code in codes:
+        try:
+            df = kline(code, days=days + 10)
+            m = {d.strftime("%Y%m%d"): float(c) for d, c in zip(df["date"], df["close"])}
+            idx_maps.append(m)
+        except Exception:
+            idx_maps.append({})
+
+    common_dates = None
+    for m in idx_maps:
+        if not m:
+            continue
+        keys = set(m.keys())
+        if common_dates is None:
+            common_dates = keys
+        else:
+            common_dates = common_dates & keys
+    if common_dates is None:
+        common_dates = set()
+
+    dates = sorted(common_dates)[-days:]
+    series = []
+    for i, name in enumerate(names):
+        m = idx_maps[i]
+        if not m:
+            continue
+        vals = [m.get(d) for d in dates]
+        base = next((v for v in vals if v), None)
+        if not base:
+            continue
+        series.append({
+            "name": name,
+            "values": [round(v / base * 100, 2) if v else None for v in vals],
+        })
+
+    return {"dates": dates, "series": series}
