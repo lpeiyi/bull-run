@@ -220,7 +220,8 @@ HTTP 响应缓存字典（`_OVERVIEW_CACHE` / `_IDX_CMP_CACHE` / `_LOW_NEXT_CACH
 
 ## 7. 🔜 历史提交信息清理（可选，有风险）
 
-> 需求：`specs/clean-history-messages/requirements.md`（Phase 1 已完成，待确认后进设计）
+> 需求 / 设计 / 任务：`specs/clean-history-messages/`
+> （Phase 1~3 已完成，**待老陆过目映射表后进入执行**）
 
 **问题**：历史提交 message 是把 `git status` 原文整段当消息体，不可读。
 
@@ -228,8 +229,11 @@ HTTP 响应缓存字典（`_OVERVIEW_CACHE` / `_IDX_CMP_CACHE` / `_LOW_NEXT_CACH
 （紧随 initial commit 之后最早的 10 条，2026-08-23 ~ 09-03）。第 12 条起（`c1f5a1`，09-24）
 起已全部规范 —— ROADMAP 第 2 项从那之后一直在生效，本条是补齐历史尾巴。
 
-**做法**：`git rebase -i --root` 逐条重写 message，或 `git filter-repo --message-callback`
-（后者本机**未安装**，见 spec 的约束 C-3）。改写保留原文件清单为正文，信息零丢失。
+**做法（已按实测收敛）**：内置 `git filter-branch --msg-filter`
+（`--msg-filter` 可读 `GIT_COMMIT` 即原 sha，未命中的消息**字节透传**，
+tree / 作者 / 时间戳原样保留，`refs/original` 自动成为回滚锚点 —— 四项均已实测）。
+原建议的 `git filter-repo` **未安装**，且要求 fresh clone、会移除 `origin`，对本任务无增益，已弃用。
+改写保留原文件清单为正文（字节原样），信息零丢失。
 
 **风险**：高
 - 这 10 条在**历史最底部** → 改它们的 message 会让**全部提交**（核查时 51 条）的 hash 变化
@@ -244,10 +248,11 @@ HTTP 响应缓存字典（`_OVERVIEW_CACHE` / `_IDX_CMP_CACHE` / `_LOW_NEXT_CACH
 | 无他人分支 / 标签 | ✅ 远端仅 `refs/heads/main` |
 | 无 fork | ✅ `forks_count = 0` |
 | 本地与远端一致 | ✅ 推送后未推送提交 0 条 |
-| 其他机器无未推送改动 | ❓ **须老陆确认（唯一未核实项）** |
+| 其他机器无未推送改动 | ✅ **老陆已确认（2026-09-28）：无旧克隆、无未推送改动** |
 
-**建议**：仅在你确认其他机器无未推送改动时执行。若图省事，也可以不清理 ——
+**建议**：前置条件已全部满足，可执行。若图省事也可以不清理 ——
 从第 12 条起的历史已经规范，本条纯属「让 `git log` 从头到尾可读」的收益。
+**不承诺**：公开仓库的旧对象会在一段时间内仍可按已知 SHA 访问，这不是本条能保证的（见 spec §6.4）。
 
 ---
 

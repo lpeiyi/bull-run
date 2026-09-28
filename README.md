@@ -142,7 +142,7 @@ python scripts/check_deps.py --missing
 改动 `core/` 里的算法后跑一遍，能立刻知道有没有弄坏既有逻辑。测试用例见 `tests/`，
 需求 / 设计 / 任务见 `specs/add-regression-tests/`、`specs/slim-app-routes/`。
 
-当前 **350 个用例**，离线可跑（`tests/conftest.py` 用 autouse 夹具阻断 socket），约 5 秒。
+当前 **369 个用例**，离线可跑（`tests/conftest.py` 用 autouse 夹具阻断 socket），约 5 秒。
 其中 `tests/test_app_routes.py` 是**路由契约测试**：不启动真实服务，
 用 Flask `test_client` 锁定每个接口的响应字段与取值口径 —— 重构 `app.py` 时它是安全网。
 
@@ -226,6 +226,7 @@ bull-run/
 │   ├── check_deps.py         # 依赖核查（报告模式 / --missing 供 start.bat 调用）
 │   ├── verify_boards.py      # 板块榜接口契约校验
 │   ├── diag_boards.py        # 板块数据诊断
+│   ├── verify_history_rewrite.py  # 历史重写校验器（重写前后逐条比对 tree/作者/时间戳/消息）
 │   └── cache_health.py       # K 线缓存体检 report / 清理 clean
 ├── tests/                    # 回归测试（pytest，离线可跑）
 │   ├── conftest.py           # 共用夹具 + 离线强制（阻断 socket）
@@ -238,6 +239,7 @@ bull-run/
 │   ├── test_screener_stocklist.py  # 清单拉取容错 / 降级回退 / 三市齐全
 │   ├── test_cache_health.py  # 缓存体检统计与清理判定
 │   ├── test_check_deps.py    # 依赖核查脚本 + requirements.txt 锁定守门
+│   ├── test_verify_history_rewrite.py  # 历史重写校验器 + message_map 形态守门
 │   └── test_startup.py       # start.bat 编码与启动链路契约
 ├── core/                     # 后端核心（算法都在这里，可脱离 Flask 单测）
 │   ├── data.py               # 行情/K线数据层（腾讯+新浪）
