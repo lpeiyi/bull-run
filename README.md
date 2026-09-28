@@ -140,9 +140,22 @@ python scripts/check_deps.py --missing
 别只改文件不装 —— 那会得到一个"看起来已锁定、实际没生效"的假安全。
 
 改动 `core/` 里的算法后跑一遍，能立刻知道有没有弄坏既有逻辑。测试用例见 `tests/`，
-需求 / 设计 / 任务见 `specs/add-regression-tests/`。
+需求 / 设计 / 任务见 `specs/add-regression-tests/`、`specs/slim-app-routes/`。
+
+当前 **350 个用例**，离线可跑（`tests/conftest.py` 用 autouse 夹具阻断 socket），约 5 秒。
+其中 `tests/test_app_routes.py` 是**路由契约测试**：不启动真实服务，
+用 Flask `test_client` 锁定每个接口的响应字段与取值口径 —— 重构 `app.py` 时它是安全网。
 
 > 与 `scripts/` 下的脚本分工不同：**测试**管纯计算逻辑的回归；**脚本**管与外部打交道的核验与运维（接口契约、缓存体检）。
+
+### app.py 的职责边界
+
+`app.py` 只负责**装配**：解析请求参数 → 调用 `core/` → `jsonify`，外加 HTTP 响应缓存字典
+（`_OVERVIEW_CACHE` / `_IDX_CMP_CACHE` / `_LOW_NEXT_CACHE` 等，带 TTL，属应用层关注点）。
+
+**算法一律放在 `core/`**。判断一处逻辑该不该下沉，看它能不能脱离 Flask 与网络被单独测试：
+能，就属于 `core/`。这样 `build_distribution(stocks)`、`get_index_compare(days)` 这类函数
+可以直接喂数据断言，不必打桩、不必起服务。
 
 ### K 线缓存体检与清理
 
@@ -200,7 +213,7 @@ python scripts/cache_health.py clean --apply --orphan-adjust
 
 ```
 bull-run/
-├── app.py                    # Flask 入口，路由 + API + 后台定时任务
+├── app.py                    # Flask 入口：只做装配（参数校验 → 调 core → jsonify）+ 后台定时任务
 ├── config.example.json       # 示例配置模板（自选/飞书/推送规则）
 ├── indicators.json           # 选股策略（通达信公式 + 配置）
 ├── requirements.txt          # 运行依赖（精确锁定版本）
@@ -216,19 +229,21 @@ bull-run/
 │   └── cache_health.py       # K 线缓存体检 report / 清理 clean
 ├── tests/                    # 回归测试（pytest，离线可跑）
 │   ├── conftest.py           # 共用夹具 + 离线强制（阻断 socket）
-│   ├── test_sentiment.py     # 情绪分五维度 / 跌停判定
+│   ├── test_app_routes.py    # 路由契约测试（test_client，锁定各接口响应字段与口径）
+│   ├── test_sentiment.py     # 情绪分五维度 / 涨跌停阈值判定
 │   ├── test_indicators.py    # MA / MACD / KDJ / RSI / BOLL
 │   ├── test_tdx.py           # 通达信公式解释器
 │   ├── test_market_boards.py # 板块双源选源与清洗排序
+│   ├── test_market_stats.py  # 涨跌幅分布统计 / 指数归一化对比
 │   ├── test_screener_stocklist.py  # 清单拉取容错 / 降级回退 / 三市齐全
 │   ├── test_cache_health.py  # 缓存体检统计与清理判定
 │   ├── test_check_deps.py    # 依赖核查脚本 + requirements.txt 锁定守门
 │   └── test_startup.py       # start.bat 编码与启动链路契约
-├── core/                     # 后端核心
+├── core/                     # 后端核心（算法都在这里，可脱离 Flask 单测）
 │   ├── data.py               # 行情/K线数据层（腾讯+新浪）
-│   ├── market.py             # 市场概览：指数 / 涨停池 / 板块 / 市场量能（KPL 校准权重 9 锚点预测 + ±30% clamp + 241 分钟分时连续）
-│   ├── sentiment.py          # 情绪分算法（五维度贡献度）
-│   ├── emotion_history.py    # 历史情绪趋势 + 缓存
+│   ├── market.py             # 市场概览：指数 / 涨停池 / 板块 / 市场量能（KPL 校准权重 9 锚点预测 + ±30% clamp + 241 分钟分时连续）+ 涨跌幅分布 / 指数归一化对比
+│   ├── sentiment.py          # 情绪分算法（五维度贡献度）+ 涨跌停阈值判定（三档）
+│   ├── emotion_history.py    # 历史情绪趋势 / 冰点次日表现 / 指数叠加 + 缓存
 │   ├── legu.py               # 乐咕乐股历史数据
 │   ├── gold.py               # 黄金行情（518880×系数折算）
 │   ├── backtest.py           # 内置指标回测引擎

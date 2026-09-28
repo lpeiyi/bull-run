@@ -1,13 +1,16 @@
 # 任务清单：app.py 路由瘦身
 
-对应 `requirements.md` / `design.md`。13 个任务分 5 阶段，**全部未开始**（待确认）。
+对应 `requirements.md` / `design.md`。13 个任务分 5 阶段，**已全部完成**（阶段 1~5）。
+
+> 提交序列：`fbdc225` 契约护栏 → `411adc1` / `d9ade52` 情绪下沉 →
+> `2bf6e2b` 阈值去重 → `7479f37` / `d079c73` 市场下沉 → `docs` 文档收尾。
 
 > **执行铁律**：阶段 1（立契约）必须先完成并**在重构前的代码上跑绿**，
 > 之后的任何一次搬迁都不得让这批用例变红。违反这条，本次「零行为变更」的承诺就没有依据。
 
 ## 阶段 1 · 立契约（测试护栏）
 
-- [ ] **1. 建立 `tests/test_app_routes.py` 骨架与统一打桩夹具**
+- [x] **1. 建立 `tests/test_app_routes.py` 骨架与统一打桩夹具**
   - `import app as app_module` + `test_client` 夹具（可行性已实测：26 条路由、导入安全、离线可跑）
   - 实现 `patch_data_sources` 夹具：把 `kline` / `kline_range` 打到**所有可能持有引用的模块**上
     （`app` / `emotion_history` / `market` / `screener`），并记录调用序列供断言
@@ -15,13 +18,13 @@
   - 数据构造用等差序列（可手算），沿用 `conftest.kline_factory` 的思路
   - _Requirement: AC-3.1、AC-3.5、AC-3.6_
 
-- [ ] **2. 契约用例：`/api/market_distribution`**
+- [x] **2. 契约用例：`/api/market_distribution`**
   - 9 区间边界归类：喂 `7 / 5 / 2 / 0.001 / 0 / -0.001 / -2 / -5 / -7` 及其邻域值，断言落入预期区间
   - `zt_count / dt_count / up_count / down_count`（含 `change_pct=None` 不计入涨跌）
   - `total == len(stocks)`
   - _Requirement: AC-1.2、AC-1.5、AC-3.2_
 
-- [ ] **3. 契约用例：`/api/emotion_trend`**
+- [x] **3. 契约用例：`/api/emotion_trend`**
   - 13 个顶层字段齐全 + `latest` 的 14 个字段齐全（AC-1.3 的字段清单）
   - `latest` 被实时 `sentiment.get_sentiment()` 覆盖
   - 指数叠加：等差收盘 → 首值 100、后续值手算可比
@@ -30,14 +33,14 @@
   - 异常分支：`kline` 抛异常 → `indexes == []` 且仍 200；`get_sentiment` 抛异常 → `latest` 回退 `trend[-1]`
   - _Requirement: AC-1.2、AC-1.3、AC-1.4、AC-3.2_
 
-- [ ] **4. 契约用例：`/api/emotion_low_next`**
+- [x] **4. 契约用例：`/api/emotion_low_next`**
   - 冰点日次日收益手算（等差收盘，如 100 → 101 记 `+1.0`）
   - 冰点日无次日 → `ret is None` 且不计入 `n`（AC-1.6）
   - `n == 0` → `avg` 与 `win_rate` 均为 `None`（不是 0）
   - `threshold` 参数生效；同参数命中 600 秒缓存、异参数不命中
   - _Requirement: AC-1.2、AC-1.6、AC-3.2_
 
-- [ ] **5. 契约用例：`/api/index_compare` 与 `/api/overview`**
+- [x] **5. 契约用例：`/api/index_compare` 与 `/api/overview`**
   - `index_compare`：4 指数日期取交集；归一化首值 100；`days=45` 被规范化为 60；某指数失败时该系列缺失
   - `overview`：60 秒缓存命中（第二次不重复取板块）；`sentiment` 每次实时；`force=1` 绕过缓存；9 个字段齐全
   - **验收闸**：在**未改动的 app.py** 上跑绿 → 契约成立
@@ -45,21 +48,21 @@
 
 ## 阶段 2 · 情绪模块下沉
 
-- [ ] **6. `_enrich_sentiment` → `emotion_history.enrich_sentiment`**
+- [x] **6. `_enrich_sentiment` → `emotion_history.enrich_sentiment`**
   - 原样搬迁 81 行，逐条保留 design §4.3 列出的 7 个细节（`_to_score` 双层兜底、日期归一化、
     `<3` 时 `force` 重取、取最近 15 点、两级空序列兜底、单点复制成两点、返回前强制校验）
   - 去掉前导下划线；`app.py` 两个调用点（`/api/overview`、`/api/emotion_trend`）同步改名
   - 搬迁后跑阶段 1 的用例 + `tests/test_sentiment.py`
   - _Requirement: AC-2.1、AC-2.3、AC-2.5_
 
-- [ ] **7. `api_emotion_trend` 主体 → `emotion_history.get_trend_view`**
+- [x] **7. `api_emotion_trend` 主体 → `emotion_history.get_trend_view`**
   - 拆出 `build_index_overlay(dates, kline_days)`
   - 搬入 `INDEX_TREND` 常量（5 个指数，注意与 `index_compare` 的 4 个**不是同一列表**）
   - `latest` 覆盖段整体 `try/except`，失败静默保留 `trend[-1]`（不得改成抛错）
   - 路由收敛为：解析 `force` / `days` → `jsonify(emotion_history.get_trend_view(...))`
   - _Requirement: AC-1.3、AC-2.1、AC-2.2_
 
-- [ ] **8. `api_emotion_low_next` 主体 → `emotion_history.get_low_next_view`**
+- [x] **8. `api_emotion_low_next` 主体 → `emotion_history.get_low_next_view`**
   - 一并搬入 `_idx_closes` 与 `_IDX_CLOSE_CACHE`（design §3.5 的例外说明）
   - 保留取整口径：`ret` 2 位、`avg` 2 位、`win_rate` 1 位；`n == 0` 时 `avg`/`win_rate` 为 `None`
   - 600 秒缓存 `_LOW_NEXT_CACHE` **留在 app.py**，core 函数不接 `force`
@@ -67,13 +70,13 @@
 
 ## 阶段 3 · 市场模块下沉
 
-- [ ] **9. `api_market_distribution` 统计段 → `market.build_distribution(stocks)`**
+- [x] **9. `api_market_distribution` 统计段 → `market.build_distribution(stocks)`**
   - **只下沉统计**，取数（`screener.load_stock_list`）留在路由（design §3.6）
   - 原样保留 9 区间级联顺序、`平盘` 的严格不等式与 `0.001` / `-0.001` 边界归属
   - `ranges` 的 `min`/`max` 仍仅作展示字段
   - _Requirement: AC-1.5、AC-2.1、AC-2.2、AC-2.5_
 
-- [ ] **10. `api_index_compare` 主体 → `market.get_index_compare(days)`**
+- [x] **10. `api_index_compare` 主体 → `market.get_index_compare(days)`**
   - 固定 4 指数与名称（不得与 `INDEX_TREND` 混用）
   - 保留日期交集逻辑、`common_dates = set()`（非 `None`）的空集兜底、首值归一化、异常指数跳过
   - `days` 的合法化（15/30/60）**留在路由**；`_IDX_CMP_CACHE` 留在 app.py
@@ -81,7 +84,7 @@
 
 ## 阶段 4 · 涨跌停阈值去重
 
-- [ ] **11. 合并 `_is_limit_stock` 与 `_is_dt_stock`**
+- [x] **11. 合并 `_is_limit_stock` 与 `_is_dt_stock`**
   - `core/sentiment.py` 新增 `limit_threshold(stock)` 与 `is_limit_stock(stock, sign)`
   - `_is_dt_stock` 改为 `return is_limit_stock(stock, -1)`，**签名与语义不变**
   - 删除 `app._is_limit_stock`，其调用方改调 `sentiment.is_limit_stock`
@@ -92,7 +95,7 @@
 
 ## 阶段 5 · 验证与收尾
 
-- [ ] **12. 全量验证与有效性自检**
+- [x] **12. 全量验证与有效性自检**
   - `pytest` 全套通过（既有 267 + 新增），离线可跑，耗时仍在秒级
   - 目标行数核对：app.py 顶层函数 ≤ 450 行、总行数 ≤ 610 行（AC-2.2）
   - `python -c "import app"` 通过（确认 core 新增 import 未造成循环依赖）
@@ -100,7 +103,7 @@
     ① `平盘` 区间的严格不等式改成 `<=`；② 删掉 `scores * 2`；③ 把 `_idx_closes` 的"次日"改成"当日"
   - _Requirement: AC-2.2、AC-4.1、AC-4.2_
 
-- [ ] **13. 文档同步与提交**
+- [x] **13. 文档同步与提交**
   - `ROADMAP.md` 第 6 项标记完成，更正两处前提（§1.2 最厚块不是路由；§1.4 原定验收手段不存在）
   - `README.md`：项目结构补充 `tests/test_app_routes.py`；如涉及则说明 app.py 的职责边界
   - `scripts/README.md`：如新增 `scripts/verify_emotion.py` 则补条目（可选任务，见下）

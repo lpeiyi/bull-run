@@ -61,19 +61,45 @@ A股 / 基金ETF 短线盯盘工具（「牛来」）。Flask 单页应用 + `co
 
 ## 回归测试（ROADMAP 第 3 项，已完成）
 - 运行：项目根执行 `"C:\Users\peiyilu\AppData\Local\Programs\Python\Python312\python.exe" -m pytest`
-- **267 个用例**，**离线可跑**（`tests/conftest.py` 用 autouse 夹具阻断 socket），约 1.5~9 秒
-- 覆盖 `sentiment` / `indicators` / `tdx` / `market` / `screener`(清单容错) /
-  `scripts/cache_health.py` / `scripts/check_deps.py` 及 `start.bat` 启动链路契约，
-  需求见 `specs/add-regression-tests/`、`specs/fix-boards-source-selection/`、
-  `specs/fix-stocklist-and-cache-health/`、`specs/lock-dependency-versions/`
+- **350 个用例**，**离线可跑**（`tests/conftest.py` 用 autouse 夹具阻断 socket），约 5 秒
+- 覆盖 `sentiment` / `indicators` / `tdx` / `market`(统计) / `screener`(清单容错) /
+  `scripts/cache_health.py` / `scripts/check_deps.py`、`start.bat` 启动链路契约、
+  以及 **`app.py` 路由契约**（`tests/test_app_routes.py`）
+- 需求见 `specs/add-regression-tests/`、`specs/fix-boards-source-selection/`、
+  `specs/fix-stocklist-and-cache-health/`、`specs/lock-dependency-versions/`、
+  `specs/slim-app-routes/`
 - **改 `core/` 里任何算法后必须先跑一遍**再交付
 - `scripts/` 下的脚本两类：**联网契约校验**（接口是否还在、字段有没有变）与**缓存体检运维**，
   与测试的分工不同
 - 交付前自查项：**"改坏即变红"有效性自检**——临时改坏一处被测逻辑，确认对应用例真的失败，
-  再回滚。防止出现"测试全绿但其实没测到东西"的假安全
+  再回滚并核对 `sha1sum` 一致。防止出现"测试全绿但其实没测到东西"的假安全
 - 测网络分页逻辑的通用手法：把唯一的网络出入口（如 `screener._sina_get`）换成内存假接口，
   假接口**除返回分页数据外还要记录请求过的页序列**，否则断言不了"失败后仍继续拉后续页"；
   记得同时把 `time.sleep` 置空，免得真等退避
+
+## app.py 职责边界（ROADMAP 第 6 项，已完成）
+- `app.py` **只做装配**：解析请求参数 → 调 `core/` → `jsonify`，
+  外加 **HTTP 响应缓存字典**（`_OVERVIEW_CACHE` / `_IDX_CMP_CACHE` / `_LOW_NEXT_CACHE` 等，
+  带 TTL，属应用层关注点，**不下沉**）
+- **算法一律在 `core/`**。判断标准：能否脱离 Flask 与网络单独测试——能，就属于 `core/`
+- 现状：890 → **592 行**（顶层函数 709 → 404），26 条路由不变
+- 下沉后的公开入口：
+  `emotion_history.enrich_sentiment / build_index_overlay / get_trend_view / get_low_next_view`
+  `market.build_distribution(stocks) / get_index_compare(days)`
+  `sentiment.limit_threshold / is_limit_stock`
+- **`core` 内部不得反向依赖 `app`**；`market → sentiment` 已有先例（函数内局部导入）
+- **零行为变更的铁律：先立契约、后动刀**。`tests/test_app_routes.py` 用 Flask `test_client`
+  锁定各接口响应字段与取值口径，必须**先在未重构的代码上跑绿**，之后每次搬迁都不得让它变红
+- **打桩陷阱**：`from X import f` 是引用副本 → `monkeypatch.setattr(core.data, "kline", fake)`
+  对 `app.py` **无效**。统一夹具对**所有可能挂载点**同时打桩：
+  `(app_module, core_data, emotion_history, market, screener)`。
+  **调用点搬家后打桩目标会变**，这是重构期最容易造成"假绿"的地方
+- 搬迁纪律：脚本写入前先 `assert 旧函数名 not in 新内容`（连**注释**里的旧名也算残留）；
+  搬迁后**重扫导入**，删掉变成死引用的（如 `kline_range`）
+- 刻意保留、不得"顺手优化"的口径：平盘严格不等式与 ±0.001 边界归属、9 区间级联顺序、
+  `up_count` 的 `(change_pct or 0)`、日期交集为空返回 `set()` 而非 `None`、
+  `INDEX_COMPARE`(4 指数) 与 `INDEX_TREND`(5 指数) **是两个列表不得合并**
+
 
 ## 板块榜单口径（ROADMAP 第 8 项，已完成）
 - 主源为**东财** `push2/clist/get`，`fs=m:90+t:2`(行业) / `t:3`(概念)
@@ -130,7 +156,9 @@ A股 / 基金ETF 短线盯盘工具（「牛来」）。Flask 单页应用 + `co
   注释一律英文，`test_startup.py` 里三道用例守着
 
 ## 已知遗留
-- ROADMAP 第 6（app.py 瘦身）/ 7（历史 message 清理）待办
+- ROADMAP 只剩第 7 项（历史 message 清理）待办；第 6 项已完成
+- 第 6 项的可选收尾 `scripts/verify_emotion.py`（联网真机对照情绪序列）未做，
+  纯离线契约测试已覆盖字段与取值口径
 - 第 4 项「干净机器上按锁定版本一次装好并启动」**未验证**（无第二台机器），
   只做了 `pip check` / 逐项比对 / `--missing` 退出码等替代验证；日后有机器应补做
 - 第 7 项风险高，须确认是单人仓库且其他机器无未推送改动

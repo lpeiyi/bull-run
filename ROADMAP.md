@@ -14,7 +14,7 @@
 | 3 | 补充回归测试 | ✅ | 中 | 低 |
 | 4 | 锁定依赖版本 | ✅ | 小 | 低 |
 | 5 | 数据缓存治理 | ✅ | 中 | 中 |
-| 6 | app.py 路由瘦身 | ⬜ | 中 | 中 |
+| 6 | app.py 路由瘦身 | ✅ | 中 | 中 |
 | 7 | 历史提交信息清理（可选） | ⬜ | 中 | 高 |
 | 8 | 板块双源校准比对逻辑修正 | ✅ | 小 | 中 |
 
@@ -166,15 +166,55 @@ ROADMAP 原验收写的是「**在一台干净机器上按锁定的版本能一�
 
 ---
 
-## 6. ⬜ app.py 路由瘦身
+## 6. ✅ app.py 路由瘦身
 
-**问题**：`app.py` 884 行，部分路由内嵌 70~85 行业务逻辑，路由层偏厚。
+> 需求 / 设计 / 任务：`specs/slim-app-routes/`
 
-**做法（建议）**
-- 把 `/api/emotion_trend`、`/api/emotion_low_next` 的计算逻辑下沉到 `core/emotion_history.py`
-- 路由只保留：参数校验 → 调用 core → 返回 JSON
+**原问题**：`app.py` 890 行，业务算法与 HTTP 装配混在同一文件里。
 
-**验收**：情绪专区 4 张卡片功能与数据不变（用 `scripts/` 里的校验脚本回归）。
+**两处原定前提，实测均需更正**
+
+| 原表述 | 实测结果 | 影响 |
+|---|---|---|
+| 「部分路由内嵌 70~85 行业务逻辑」 | 最厚的一块是 **81 行的 `_enrich_sentiment`，它根本不是路由**，而是被两个路由共用的模块级辅助函数 | 只搬 ROADMAP 点名的 2 个路由解决不了问题；而且新路由会跨层回调 `app.py` 的私有函数，形成 **core 依赖 app 的反向耦合**，比不改更糟 → 5 块必须一起搬 |
+| 「用 `scripts/` 里的校验脚本回归」 | `scripts/` 下**没有**情绪校验脚本（只有联网契约校验与缓存体检两类） | 验收手段改为 `tests/test_app_routes.py` 契约测试 |
+
+**做法**：算法回 `core/`，`app.py` 只留「参数校验 → 调 core → jsonify」。
+HTTP 响应缓存字典（`_OVERVIEW_CACHE` / `_IDX_CMP_CACHE` / `_LOW_NEXT_CACHE` 等）属应用层关注点，**不下沉**。
+
+| 原位置（`app.py`） | 行数 | 去向 |
+|---|---|---|
+| `_enrich_sentiment` | 81 | `emotion_history.enrich_sentiment` |
+| `api_emotion_trend` 主体（含指数叠加段） | 68 | `emotion_history.get_trend_view` / `build_index_overlay` |
+| `api_emotion_low_next` 主体 | 47 | `emotion_history.get_low_next_view` |
+| ↳ 其依赖的 `_idx_closes` + `INDEX_TREND` + `_IDX_CLOSE_CACHE` | 16 | 随同上移（数据缓存，非 HTTP 缓存） |
+| `api_market_distribution` 统计段 | 58 | `market.build_distribution(stocks)` |
+| `api_index_compare` 主体 | 54 | `market.get_index_compare(days)` |
+| `_is_limit_stock` | 11 | 与 `sentiment._is_dt_stock` 合并为 `limit_threshold` / `is_limit_stock` |
+
+合计下沉 **335 行**（按 design 的分块口径；`app.py` 实际净减 **298 行**：890 → 592）。
+
+**关键取舍**
+- **先立契约、后动刀**：`tests/test_app_routes.py` 先在**未重构**的 `app.py` 上跑绿，
+  之后任何一次搬迁都不得让它变红 —— 这是「零行为变更」承诺的唯一依据
+- **core 新函数直接返回响应 dict**：与既有风格一致（`market.get_boards()` 等），搬迁量最小、逐字段可比对
+- **取数与统计分离**：`build_distribution(stocks)` / `get_index_compare(days)` 是纯函数，
+  测试只需喂一个 list，不必打桩 `screener`、不必起 Flask
+- **不做「顺手优化」**：平盘的严格不等式与 ±0.001 边界归属、9 区间从高到低的级联顺序、
+  `up_count` 的 `(change_pct or 0)` 语义、日期交集为空时返回 `set()` 而非 `None`、
+  单个指数失败静默跳过 —— 全部逐行保持原样
+- **`_is_limit_stock` 合并保两个对外行为**：抽出共享的 `limit_threshold`，
+  `_is_dt_stock` 退化为 `is_limit_stock(stock, -1)` 薄包装，调用方与既有用例都不用改
+
+**验收**
+- **350 个回归用例全绿**（重构前 267；新增 83 = 23 路由契约 + 24 涨跌停阈值等价 + 36 市场统计单测），离线可跑、约 5 秒
+- **行数**：`app.py` 890 → **592** 行（限 610）；顶层函数 709 → **404** 行（限 450）
+- `python -c "import app"` 通过，26 条路由数量不变（确认 `core/` 未新增反向依赖）
+- **「改坏即变红」有效性自检 3 项**（逐项改坏 → 对应用例变红 → 回滚 → `sha1sum` 一致）：
+  ① 平盘边界改闭区间 → 2 例变红；② 删单点复制 `scores * 2` → 1 例变红；③ 冰点收益取当日而非次日 → 2 例变红
+
+**遗留（可选）**：`scripts/verify_emotion.py`（联网真机对照情绪序列）未做，
+纯离线契约测试已覆盖字段与取值口径，真机对照作为独立任务择期补。
 
 ---
 

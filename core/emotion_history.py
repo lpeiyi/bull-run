@@ -216,6 +216,8 @@ def enrich_sentiment(s):
     s["history_labels"] = labels
     s["prev_score"] = prev_score
     return s
+
+
 # ── 情绪视图（历史趋势 / 冰点次日表现） ───────────────────
 # 原 app.py 路由内嵌的计算，为可离线测试而整体下沉（见 specs/slim-app-routes/）。
 # 搬迁保持逐行等价，未改动任何分支、取整口径与兜底值。
