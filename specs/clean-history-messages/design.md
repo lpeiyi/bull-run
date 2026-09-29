@@ -289,10 +289,25 @@ committer_email / committer_ts / message(原始字节)`。
 | AC-4.2 用 `--force-with-lease` | 步 10 |
 | AC-4.3 记录旧 HEAD 且验证可取回 | 步 2（bundle verify）+ 步 5 的旧 hash 记录 |
 
-## 11. 需老陆拍板
+## 11. 需老陆拍板（**已全部拍板，2026-09-29**）
 
 1. **§5 的 10 条概括措辞**是否准确？尤其 #2（我判断为"补 MA60/MA120"）、
    #8（判断为"量能预测改开盘啦校准"）—— 这两条是我读 diff 后下的结论，
    原文里没有自述，欢迎纠偏。
+   → **老陆决定：按现稿。** 执行后 10 条消息已落到新历史中，成品文本见 `message_map.json`。
 2. **`scripts/verify_history_rewrite.py` 放 `scripts/` 还是 spec 目录**？（§3 给了推荐与理由）
+   → **老陆决定：留在 `scripts/`**（与 `cache_health.py`、`check_deps.py` 同级）。
 3. **步 12 的 gc 要不要做**？（做 = 本地旧对象也消失；不做 = 保留本地回滚能力，不影响任何 AC）
+   → **老陆决定：不做。** 本地保留 `refs/original/refs/heads/main` 作为一级回滚锚点；
+     该项已在 `tasks.md` 的 4.3 标记为「可选，已跳过」。
+
+### 11.1 执行后回填：设计与实际的三处偏差
+
+| # | 设计中的预期 | 实际发生 | 处置 |
+|---|---|---|---|
+| 1 | §2.4 命令用相对路径引脚本 | `--msg-filter` 的工作目录是 `.git-rewrite/t`，相对路径解析失败（`No such file or directory`） | 改用**绝对路径**；已记入 ROADMAP §7 |
+| 2 | §7 步 12 才涉及 `.git-rewrite` | 该临时目录在 Windows 下落于**仓库根**（非 `.git/` 内），且正常结束后**不自动清理** | 清掉并把 `.git-rewrite/` 加入 `.gitignore` |
+| 3 | 未预估耗时 | 53 条 × fork python ≈ **3 分 25 秒**，前台跑被超时掐断（中途留下半成品目录） | 改后台执行；中断无副作用（HEAD 与 refs 未动，可直接重跑） |
+
+三项偏差均**不影响任何 AC**，也未产生非预期改动 —— 重写后的逐条校验、`git diff` 为空、
+initial commit 保持原 hash 三处证据一致指向这一点。

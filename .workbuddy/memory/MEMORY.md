@@ -71,13 +71,13 @@ A股 / 基金ETF 短线盯盘工具（「牛来」）。Flask 单页应用 + `co
 
 ## 回归测试（ROADMAP 第 3 项，已完成）
 - 运行：项目根执行 `"C:\Users\peiyilu\AppData\Local\Programs\Python\Python312\python.exe" -m pytest`
-- **350 个用例**，**离线可跑**（`tests/conftest.py` 用 autouse 夹具阻断 socket），约 5 秒
+- **369 个用例**，**离线可跑**（`tests/conftest.py` 用 autouse 夹具阻断 socket），约 5~11 秒
 - 覆盖 `sentiment` / `indicators` / `tdx` / `market`(统计) / `screener`(清单容错) /
-  `scripts/cache_health.py` / `scripts/check_deps.py`、`start.bat` 启动链路契约、
-  以及 **`app.py` 路由契约**（`tests/test_app_routes.py`）
+  `scripts/cache_health.py` / `scripts/check_deps.py` / `scripts/verify_history_rewrite.py`、
+  `start.bat` 启动链路契约、以及 **`app.py` 路由契约**（`tests/test_app_routes.py`）
 - 需求见 `specs/add-regression-tests/`、`specs/fix-boards-source-selection/`、
   `specs/fix-stocklist-and-cache-health/`、`specs/lock-dependency-versions/`、
-  `specs/slim-app-routes/`
+  `specs/slim-app-routes/`、`specs/clean-history-messages/`
 - **改 `core/` 里任何算法后必须先跑一遍**再交付
 - `scripts/` 下的脚本两类：**联网契约校验**（接口是否还在、字段有没有变）与**缓存体检运维**，
   与测试的分工不同
@@ -165,12 +165,33 @@ A股 / 基金ETF 短线盯盘工具（「牛来」）。Flask 单页应用 + `co
 - **别用记事本改 `start.bat`**：cmd 按 GBK 解析，中文注释/BOM 会让首行失效并报「找不到路径」。
   注释一律英文，`test_startup.py` 里三道用例守着
 
+## 历史重写（ROADMAP 第 7 项，已完成 2026-09-29）
+- 工具：内置 **`git filter-branch --msg-filter`**（`git filter-repo` 本机未装且会移除 origin，弃用）
+- 实测行为：`--msg-filter` 内**可读 `GIT_COMMIT` = 原提交 sha**（故能按 hash 精确匹配）；
+  未命中的消息**字节透传**（行尾空格、无结尾换行均保留）；tree / 作者 / 时间戳原样保留；
+  `refs/original/refs/heads/main` 自动建立 = **一级回滚锚点**
+- **三个 Windows 特有的坑**
+  1. `--msg-filter` 的**工作目录是 `.git-rewrite/t`**，故脚本必须写**绝对路径**，
+     相对路径报 `No such file or directory`
+  2. 临时目录 `.git-rewrite/` 落在**仓库根**（非 `.git/` 内）且**不自动清理**，
+     会被 `git add -A` 误提交 → 已加进 `.gitignore`
+  3. **耗时 ≈ 4 秒/条**（每条 fork 一次 python），53 条约 3 分半，
+     前台跑会被超时掐断 → **必须后台跑**。中断无副作用（HEAD/refs 未动，可直接重跑）
+- 校验器 `scripts/verify_history_rewrite.py`（`--dump` 落基线 / `--verify` 逐条比对，退出码 0/1）
+  可复用于任何历史重写；映射与入口在 `specs/clean-history-messages/`
+- **改写后仅 initial commit `e43718f` 保持原 hash**（消息/tree/父链全不变 → 可事先推导的预测）。
+  用「预测是否命中」来证明「无计划外改动混入」，比只比 HEAD 更有说服力
+- 备份留痕（**仓库外**，不入库）：`D:/job/Repository/bull-run-history-backup-20260928/`
+  —— `pre-rewrite.bundle` + `baseline.json` + `old-new-map.txt` + `file-sha1.txt`
+- **本地回滚锚点刻意保留**（未做 `git gc --prune=now`）：
+  `git reset --hard refs/original/refs/heads/main` 一条命令退回旧历史
+
 ## 已知遗留
-- ROADMAP 只剩第 7 项（历史 message 清理）待办；第 6 项已完成
+- ROADMAP **1~8 全部 ✅**（第 7 项 2026-09-29 收尾）
 - 第 6 项的可选收尾 `scripts/verify_emotion.py`（联网真机对照情绪序列）未做，
   纯离线契约测试已覆盖字段与取值口径
+- 情绪专区 4 张卡片的**人工页面确认**未做（只保证了响应字段与取值口径未变）
 - 第 4 项「干净机器上按锁定版本一次装好并启动」**未验证**（无第二台机器），
   只做了 `pip check` / 逐项比对 / `--missing` 退出码等替代验证；日后有机器应补做
-- 第 7 项风险高，须确认是单人仓库且其他机器无未推送改动
 - 全局 `~/.gitconfig` 里那两个错误配置（`http.proxy=127.0.0.1:8080`）**仍未清理**，
   只在本仓库用局部配置覆盖了。其他仓库若有联网操作异常，大概率同因
