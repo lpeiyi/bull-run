@@ -27,3 +27,7 @@ Thumbs.db
 
 # 临时调试产物（勿提交；脚本放 scripts/，参考素材放对应 spec 的 reference/）
 _tmp_*
+
+# git filter-branch 的临时目录：Windows 下会落在仓库根（而非 .git/ 内），
+# 且正常结束后不自动清理。留着会被 git add -A 误提交。
+.git-rewrite/
