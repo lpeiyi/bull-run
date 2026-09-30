@@ -38,6 +38,17 @@ def save_config(cfg):
         json.dump(cfg, f, ensure_ascii=False, indent=2)
 
 
+def _fmt_ts(ts):
+    """时间戳 → 本地时间字符串（供前端标注数据时点）；无值时返回空串。"""
+    try:
+        ts = float(ts or 0)
+    except (TypeError, ValueError):
+        return ""
+    if ts <= 0:
+        return ""
+    return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ts))
+
+
 # ── 路由页面 ────────────────────────────────────────
 @app.route("/")
 def index():
@@ -163,12 +174,20 @@ def api_gold():
 
 @app.route("/api/market_distribution")
 def api_market_distribution():
-    """全市场 A 股当日涨跌幅分布统计，9 个区间。支持 ?force=1 强制刷新股票列表缓存。"""
+    """全市场 A 股当日涨跌幅分布统计，9 个区间。支持 ?force=1 强制刷新股票列表缓存。
+
+    响应在 build_distribution 的统计字段之外，附加快照状态：
+    stale / degraded / reason / snapshot_at（供前端标注数据时点与口径）。
+    """
     force = request.args.get("force") == "1"
-    # load_stock_list 自带 24 小时文件缓存，force=True 时强制重新拉取
-    stocks = screener.load_stock_list(force=force)
-    # 取数（含 force 语义）留在路由，统计在 core（market.build_distribution）
-    return jsonify(market.build_distribution(stocks))
+    # 时效策略（行情窗口 120s / 窗口外 12h）与有效性判定都在 core.screener 内
+    stocks, meta = screener.load_stock_list_meta(force=force)
+    body = market.build_distribution(stocks)
+    body["stale"] = meta.get("stale", False)
+    body["degraded"] = meta.get("degraded", False)
+    body["reason"] = meta.get("reason", "")
+    body["snapshot_at"] = _fmt_ts(meta.get("fetched_at"))
+    return jsonify(body)
 
 
 @app.route("/api/emotion_trend")
@@ -442,6 +461,8 @@ def api_screen_stock_list():
         "stocks": stocks[:20],
         "degraded": meta.get("degraded", False),
         "reason": meta.get("reason", ""),
+        "valid": meta.get("valid", True),
+        "stale": meta.get("stale", False),
     })
 
 
@@ -580,7 +601,16 @@ if __name__ == "__main__":
         except Exception:
             pass
 
+    def _warmup_stock_list():
+        # 后台预热全市场清单快照（并发拉取约 4 秒），把首屏这次等待挪到页面打开之前。
+        # 失败不报错：真正需要时 load_stock_list_meta 会按 TTL 重新拉取。
+        try:
+            screener.load_stock_list(force=True)
+        except Exception:
+            pass
+
     threading.Thread(target=_warmup_emotion, daemon=True).start()
+    threading.Thread(target=_warmup_stock_list, daemon=True).start()
     threading.Thread(target=background_monitor, daemon=True).start()
     threading.Thread(target=background_screener, daemon=True).start()
     threading.Thread(target=_open_browser, daemon=True).start()
