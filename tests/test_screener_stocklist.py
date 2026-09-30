@@ -115,16 +115,23 @@ def test_page_retry_exhausted_continues(iso):
 
 
 def test_consecutive_failures_abort_early(iso):
-    """全部页失败 → 连续失败达阈值即提前结束，不空转 200 页。"""
+    """全部页失败 → 连续失败达阈值即提前结束，不空转拉满页数上限。
+
+    注意：拉取已改为**分批并发**（见 specs/fix-stocklist-snapshot-freshness/），
+    第一批会同时发出 _FETCH_WORKERS 页，故断言从「精确的 3 页 9 次」改为
+    「请求量不超过第一批、且远未拉满上限」—— 语义（断网不空转）未变。
+    """
     fake = iso(_pages_for(300), fail={p: -1 for p in range(1, 201)})
 
     stocks, ok = screener._fetch_sina_stock_list()
 
     assert ok is False
     assert stocks == []
-    # 仅探测了 _MAX_CONSECUTIVE_FAIL 页，每页重试 _PAGE_MAX_RETRY 次
-    assert set(fake.calls) == set(range(1, screener._MAX_CONSECUTIVE_FAIL + 1))
-    assert len(fake.calls) == screener._MAX_CONSECUTIVE_FAIL * screener._PAGE_MAX_RETRY
+    # 只发了一批请求：页数不超过并发度，每页重试 _PAGE_MAX_RETRY 次
+    assert len(set(fake.calls)) <= screener._FETCH_WORKERS
+    assert set(fake.calls) == set(range(1, screener._FETCH_WORKERS + 1))
+    assert len(fake.calls) == screener._FETCH_WORKERS * screener._PAGE_MAX_RETRY
+    assert len(set(fake.calls)) < screener._MAX_PAGE      # 未空转到上限
 
 
 # ── AC-1.4 条数不足判失败 ─────────────────────────────
@@ -208,7 +215,11 @@ def test_no_cache_and_failure_returns_empty(iso):
 # ── 缓存直用与落库结构 ────────────────────────────────
 
 def test_fresh_complete_cache_used_without_fetch(iso, monkeypatch):
-    """未过期且完整标记的缓存直接使用，不发起网络请求。"""
+    """未过期且完整标记的 v2 缓存直接使用，不发起网络请求。
+
+    v2（无 valid）走「当场判定」：样本 1 条 < _MIN_VALID_SAMPLE 时豁免，
+    故仍可直用 —— 与升级前的行为一致。
+    """
     calls = []
 
     def _boom(*a, **k):
@@ -230,20 +241,47 @@ def test_fresh_complete_cache_used_without_fetch(iso, monkeypatch):
     assert calls == []
 
 
-def test_successful_fetch_writes_v2_cache(iso):
+def test_fresh_v3_cache_used_without_fetch(iso, monkeypatch):
+    """v3 缓存（带 valid: true）同样直接使用，不发起网络请求。"""
+    calls = []
+
+    def _boom(*a, **k):
+        calls.append(1)
+        raise AssertionError("不应发起网络请求")
+
+    iso([])
+    monkeypatch.setattr(screener, "_sina_get", _boom)
+
+    fresh = {"ts": time.time(), "version": screener._LIST_VERSION,
+             "complete": True, "valid": True,
+             "stocks": [{"code": "sh600000", "pure_code": "600000"}]}
+    with open(screener._LIST_FILE, "w", encoding="utf-8") as f:
+        json.dump(fresh, f, ensure_ascii=False)
+
+    stocks, meta = screener.load_stock_list_meta(force=False)
+
+    assert stocks == fresh["stocks"]
+    assert meta["degraded"] is False
+    assert meta["valid"] is True
+    assert meta["stale"] is False
+    assert calls == []
+
+
+def test_successful_fetch_writes_v3_cache(iso):
     iso(_pages_for(screener._MIN_STOCK_COUNT))
 
     stocks, meta = screener.load_stock_list_meta(force=True)
 
     assert meta["degraded"] is False
     d = _read_cache()
-    assert d["version"] == screener._LIST_VERSION == 2
+    assert d["version"] == screener._LIST_VERSION == 3
     assert d["complete"] is True
+    assert d["valid"] is True
     assert len(d["stocks"]) == len(stocks) == screener._MIN_STOCK_COUNT
 
 
 def test_legacy_cache_is_refreshed_on_success(iso):
-    """旧格式缓存（无 version）被视为可能不完整：成功拉取后应被修正为 v2。"""
+    """旧格式缓存（无 version）被视为可能不完整：成功拉取后应被修正为 v3。"""
     legacy = {"ts": time.time(), "stocks": [{"code": "bj920000", "pure_code": "920000"}]}
     with open(screener._LIST_FILE, "w", encoding="utf-8") as f:
         json.dump(legacy, f, ensure_ascii=False)

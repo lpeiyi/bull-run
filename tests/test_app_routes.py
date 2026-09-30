@@ -215,13 +215,22 @@ def _stk(symbol, pct):
 
 @pytest.fixture
 def patch_stock_list(monkeypatch):
-    holder = {"stocks": []}
+    holder = {"stocks": [], "meta": {}}
+
+    def _fake_meta(force=False):
+        holder["force"] = force
+        meta = {"degraded": False, "count": len(holder["stocks"]),
+                "fetched_at": 0.0, "reason": "", "valid": True, "stale": False}
+        meta.update(holder.get("meta") or {})
+        return holder["stocks"], meta
 
     def _fake(force=False):
         holder["force"] = force
         return holder["stocks"]
 
-    # app.py 里是 `screener.load_stock_list(...)`（模块属性），故 patch 源头即有效
+    # app.py 里是 `screener.load_stock_list_meta(...)` / `screener.load_stock_list(...)`
+    # （模块属性），故 patch 源头即有效
+    monkeypatch.setattr(screener, "load_stock_list_meta", _fake_meta)
     monkeypatch.setattr(screener, "load_stock_list", _fake)
     return holder
 

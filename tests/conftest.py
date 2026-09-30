@@ -29,6 +29,19 @@ def _no_network(monkeypatch):
     monkeypatch.setattr(socket, "create_connection", _blocked)
 
 
+@pytest.fixture(autouse=True)
+def _reset_screener_state():
+    """重置 core.screener 的进程级状态，避免用例间互相污染。
+
+    `_LAST_ATTEMPT`（最小重试间隔抑制）会跨用例残留：前一个用例留下的
+    「刚拉取失败过」标记会抑制后续用例的真实拉取，导致假失败。
+    """
+    from core import screener
+    screener._LAST_ATTEMPT.update(ts=0.0, usable=False)
+    yield
+    screener._LAST_ATTEMPT.update(ts=0.0, usable=False)
+
+
 @pytest.fixture
 def kline_factory():
     """生成等差性质的 K 线 DataFrame（供 tdx 等需要完整 OHLCV 的用例使用）。
