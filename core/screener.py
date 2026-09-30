@@ -7,6 +7,8 @@ import time
 import json
 import logging
 import re
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
 import pandas as pd
@@ -29,9 +31,23 @@ _EM_SESSION.headers.update({"User-Agent": UA})
 _MIN_STOCK_COUNT = 2000      # 合理性下限：低于此判为拉取失败，不落库
 _PAGE_MAX_RETRY = 3          # 单页请求重试上限
 _MAX_CONSECUTIVE_FAIL = 3    # 连续失败页达到此数即判定网络不可用，提前结束拉取
-_LIST_VERSION = 2            # 清单缓存结构版本（v1=历史无 version 字段）
+_PAGE_SIZE = 100             # 单页条数（实测新浪 num 无法放大，恒定 100）
+
+# 时效与有效性参数（见 specs/fix-stocklist-snapshot-freshness/）
+_LIST_VERSION = 3            # 清单缓存结构版本（v1=无 version；v2=有 complete 无 valid；v3=含 valid）
+_TTL_TRADING = 120           # 行情窗口内缓存有效期（秒）
+_TTL_IDLE = 12 * 3600        # 行情窗口外缓存有效期（秒）
+_VALID_PRICE_RATIO = 0.90    # 有效快照判据：price > 0 占比下限
+_MIN_VALID_SAMPLE = 100      # 样本不足此数时跳过有效性判定
+_FETCH_WORKERS = 6           # 并发分页线程数
+_MAX_PAGE = 60               # 页数上限（60 × 100 = 6000 只，覆盖当前 5571）
+_MIN_RETRY_INTERVAL = 60     # 拉取失败/判定无效后的最小重试间隔（秒）
 
 _log = logging.getLogger(__name__)
+
+# 进程级状态：防惊群（single-flight）与最小重试间隔
+_FETCH_LOCK = threading.Lock()
+_LAST_ATTEMPT = {"ts": 0.0, "usable": False}
 
 
 def _safe_float(v, default=0.0):
@@ -42,6 +58,56 @@ def _safe_float(v, default=0.0):
         return float(v)
     except (ValueError, TypeError):
         return default
+
+
+# ── 时效与有效性纯函数（可脱网单测） ──────────────────
+
+def snapshot_valid_ratio(stocks):
+    """快照中 price > 0 的标的占比。空列表返回 0.0。
+
+    判据必须看 price 而不是 change_pct：盘前新浪把绝大多数标的的 trade 重置为 0，
+    但 changepercent 仍残留上一交易日的值 —— 只看涨跌幅会把废快照误判为有效。
+    """
+    if not stocks:
+        return 0.0
+    n = 0
+    for s in stocks:
+        if _safe_float((s or {}).get("price")) > 0:
+            n += 1
+    return n / len(stocks)
+
+
+def snapshot_is_valid(stocks):
+    """快照是否为「有效行情」。
+
+    样本少于 _MIN_VALID_SAMPLE 时返回 True：非全市场样本（测试桩、残缺缓存）
+    上算占比没有统计意义，不应据此否决一份可能正常的缓存。
+    """
+    if len(stocks) < _MIN_VALID_SAMPLE:
+        return True
+    return snapshot_valid_ratio(stocks) >= _VALID_PRICE_RATIO
+
+
+def _in_quote_window(now=None):
+    """是否处于行情有效窗口：交易日 09:15~11:30、13:00~15:00（不含午休）。
+
+    刻意排除午休：市场停顿 90 分钟，按窗口内 TTL 会白拉约 45 次。
+    不识别法定节假日（见 design §3.3 已知取舍），假日拉到的昨日收盘快照本身有效。
+    """
+    t = datetime.fromtimestamp(now if now is not None else time.time())
+    if t.weekday() >= 5:              # 周六 / 周日
+        return False
+    hm = t.hour * 60 + t.minute
+    return (9 * 60 + 15 <= hm <= 11 * 60 + 30) or (13 * 60 <= hm <= 15 * 60)
+
+
+def _cache_ttl(now=None):
+    """当前时刻应采用的清单缓存有效期（秒）。
+
+    跨时段失效无需专门代码：昨晚写入的缓存到次日上午 now - ts 已远超 120s，
+    在窗口内自然判定为过期。
+    """
+    return _TTL_TRADING if _in_quote_window(now) else _TTL_IDLE
 
 
 def _sina_get(node, page, num=100):
@@ -81,8 +147,13 @@ def _read_stock_list_cache():
 
 
 def _write_stock_list_cache(stocks, ts):
-    """写入清单缓存（仅拉取完整时调用）。带 version/complete 标记。"""
-    payload = {"ts": ts, "version": _LIST_VERSION, "complete": True, "stocks": stocks}
+    """写入清单缓存（仅在拉取完整**且通过有效性判定**时调用）。
+
+    结构为 v3：{ts, version, complete, valid, stocks}。
+    `valid` 是写入时的有效性判定结果（只写 True；不通过判定的一律不落库）。
+    """
+    payload = {"ts": ts, "version": _LIST_VERSION, "complete": True,
+               "valid": True, "stocks": stocks}
     try:
         with open(_LIST_FILE, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False)
@@ -90,10 +161,93 @@ def _write_stock_list_cache(stocks, ts):
         _log.error("[stocklist] 写入清单缓存失败：%s", e)
 
 
+def _has_known_version(meta):
+    """缓存是否带有可识别的 version 标记（v1 历史文件无此字段）。"""
+    return isinstance(meta.get("version"), int)
+
+
+def _meta_valid_or_unknown(stocks, meta):
+    """缓存有效性三态判定。
+
+    v3 缓存看 `valid` 标记；v1/v2 无标记则**当场判定**（样本不足时豁免）。
+    当场判定是必须的：升级后那份盘前写的废缓存若被一律放行，问题会原地复活。
+    """
+    v = meta.get("valid")
+    if v is True:
+        return True
+    if v is False:
+        return False
+    return snapshot_is_valid(stocks)
+
+
+def _is_stale(fetched_at, now):
+    """数据是否已超出它本该有的寿命（= 非当前时段的旧快照）。"""
+    if not fetched_at:
+        return False
+    return (now - fetched_at) >= _cache_ttl(now)
+
+
+def _ok_meta(stocks, fetched_at, now):
+    """构造「正常可用」的 meta（degraded=False）。"""
+    return {
+        "degraded": False,
+        "count": len(stocks),
+        "fetched_at": fetched_at,
+        "reason": "",
+        "valid": True,
+        "stale": _is_stale(fetched_at, now),
+    }
+
+
+def _directly_usable(cached, now):
+    """缓存是否可直接使用：新鲜 + 完整 + 有版本标记 + 通过有效性判定。"""
+    if cached is None:
+        return False
+    stocks, meta = cached
+    if not stocks:
+        return False
+    if meta.get("complete") is not True:      # 沿用既有语义：不完整不直用
+        return False
+    if not _has_known_version(meta):          # v1 旧格式：沿用既有行为（重拉修正）
+        return False
+    if now - meta.get("ts", 0) >= _cache_ttl(now):
+        return False
+    return _meta_valid_or_unknown(stocks, meta)
+
+
+def _fallback_or_empty(cached, now, reason):
+    """拉取失败 / 快照无效时的降级出口：回退可用旧缓存，否则返回空。
+
+    回退的旧缓存也要过一遍有效性判定 —— 否则一份盘前废数据会从回退路径复活。
+    """
+    if cached is not None and cached[0] and _meta_valid_or_unknown(cached[0], cached[1]):
+        old_stocks, old_meta = cached
+        old_ts = old_meta.get("ts", 0) or 0
+        when = (datetime.fromtimestamp(old_ts).strftime("%Y-%m-%d %H:%M")
+                if old_ts else "时间未知")
+        full = "%s，已回退到旧缓存（%s，%d 条）" % (reason, when, len(old_stocks))
+        _log.error("[stocklist] %s", full)
+        return old_stocks, {
+            "degraded": True,
+            "count": len(old_stocks),
+            "fetched_at": old_ts,
+            "reason": full,
+            "valid": True,
+            "stale": _is_stale(old_ts, now),
+        }
+
+    full = reason + "，且无可用缓存"
+    _log.error("[stocklist] %s，返回空清单", full)
+    return [], {"degraded": True, "count": 0, "fetched_at": 0,
+                "reason": full, "valid": False, "stale": False}
+
+
 def load_stock_list(force=False):
     """
-    获取全市场 A 股列表（沪深京），缓存 24 小时
+    获取全市场 A 股列表（沪深京）
+
     返回 [{code, name, market, mcap_yi, fmcap_yi, industry, ...}]
+    时效策略见 load_stock_list_meta()（行情窗口内 120s，窗口外 12h）。
 
     兼容原签名：只返回列表。需要感知「降级」状态时请用 load_stock_list_meta()。
     """
@@ -105,63 +259,62 @@ def load_stock_list_meta(force=False):
     """获取全市场 A 股列表，并附带数据健康状况。
 
     返回 (stocks, meta)，meta = {
-      "degraded":   bool,   # True 表示用的是降级缓存（非本次实时完整结果）
+      "degraded":   bool,   # True 表示用的是降级缓存（非本次实时有效结果）
       "count":      int,    # 返回条数
       "fetched_at": float,  # 该数据的拉取时间戳
       "reason":     str,    # degraded 时的原因说明
+      "valid":      bool,   # 返回的数据是否通过有效性判定
+      "stale":      bool,   # 数据是否已超出应有寿命（非当前时段的旧快照）
     }
 
-    判定顺序（见 specs/fix-stocklist-and-cache-health/design.md §3.1）：
-      1. 缓存未过期且已知完整（complete=True） → 直接用缓存
-      2. 实时拉取成功（ok=True）              → 写缓存并返回
-      3. 拉取失败 + 有旧缓存                  → 不覆盖缓存，回退旧缓存并标记降级
-      4. 拉取失败 + 无可用缓存                → 返回 [] 并记 error
+    判定顺序（见 specs/fix-stocklist-snapshot-freshness/design.md §3.5）：
+      1. 缓存新鲜（按行情窗口分层 TTL）且完整且有效 → 直接用缓存
+      2. 加锁（防惊群）→ 双检缓存 → 最小重试间隔抑制 → 实时拉取
+      3. 拉取完整且有效（price>0 占比达标）     → 写缓存并返回
+      4. 拉取失败 / 快照无效 + 有可用旧缓存      → 不覆盖缓存，回退并标记降级
+      5. 拉取失败 / 快照无效 + 无可用缓存        → 返回 [] 并记 error
 
-    注：旧版缓存（无 complete 字段）被视为「可能不完整」，不享受 24h 直用；
-    会尝试重新拉取，成功后即写为 v2 完整缓存。
+    注：v1 旧缓存（无 version）与 v2 旧缓存（无 valid）均不享受直用，
+    会被重拉修正；回退路径上则按现场统计判定有效性。
+
+    `force=True` 穿透新鲜度判断、双检与最小重试间隔（AC-2.4）。
     """
     now = time.time()
     cached = _read_stock_list_cache()
 
-    if not force and cached is not None:
+    if not force and _directly_usable(cached, now):
         stocks, meta = cached
-        fresh = now - meta.get("ts", 0) < 24 * 3600
-        if fresh and meta.get("complete") is True:
-            return stocks, {
-                "degraded": False,
-                "count": len(stocks),
-                "fetched_at": meta.get("ts", 0),
-                "reason": "",
-            }
+        return stocks, _ok_meta(stocks, meta.get("ts", 0), now)
 
-    stocks, ok = _fetch_sina_stock_list()
-    if ok:
-        _write_stock_list_cache(stocks, now)
-        return stocks, {
-            "degraded": False,
-            "count": len(stocks),
-            "fetched_at": now,
-            "reason": "",
-        }
+    # 慢路径加锁：同一时刻只允许一次真实拉取（single-flight）
+    with _FETCH_LOCK:
+        cached = _read_stock_list_cache()      # 双检：等锁期间可能已被别人刷新
+        if not force and _directly_usable(cached, now):
+            stocks, meta = cached
+            return stocks, _ok_meta(stocks, meta.get("ts", 0), now)
 
-    # 拉取不完整：不得覆盖原有缓存（AC-1.3）
-    if cached is not None and cached[0]:
-        old_stocks, old_meta = cached
-        old_ts = old_meta.get("ts", 0) or 0
-        when = (datetime.fromtimestamp(old_ts).strftime("%Y-%m-%d %H:%M")
-                if old_ts else "时间未知")
-        reason = "清单拉取失败，已回退到旧缓存（%s，%d 条，可能不完整）" % (when, len(old_stocks))
-        _log.error("[stocklist] %s", reason)
-        return old_stocks, {
-            "degraded": True,
-            "count": len(old_stocks),
-            "fetched_at": old_ts,
-            "reason": reason,
-        }
+        if (not force
+                and now - _LAST_ATTEMPT["ts"] < _MIN_RETRY_INTERVAL
+                and not _LAST_ATTEMPT["usable"]):
+            return _fallback_or_empty(
+                cached, now,
+                "距上次拉取失败不足 %d 秒" % _MIN_RETRY_INTERVAL)
 
-    reason = "清单拉取失败且无可用缓存"
-    _log.error("[stocklist] %s，返回空清单", reason)
-    return [], {"degraded": True, "count": 0, "fetched_at": 0, "reason": reason}
+        stocks, ok = _fetch_sina_stock_list()
+        valid = bool(ok) and snapshot_is_valid(stocks)
+        _LAST_ATTEMPT["ts"] = time.time()
+        _LAST_ATTEMPT["usable"] = valid
+
+        if valid:
+            _write_stock_list_cache(stocks, now)
+            return stocks, _ok_meta(stocks, now, now)
+
+        if not ok:
+            reason = "清单拉取不完整（失败页或条数不足）"
+        else:
+            reason = "行情快照无效（price>0 占比 %.1f%%）" % (
+                snapshot_valid_ratio(stocks) * 100)
+        return _fallback_or_empty(cached, now, reason)
 
 
 def _normalize_stock_rows(raw_items):
@@ -212,55 +365,93 @@ def _normalize_stock_rows(raw_items):
     return out
 
 
+def _fetch_one_page(node, page):
+    """拉取单页（含递增退避重试）。返回 (page, diff, err)。
+
+    保留既有单页容错：至多重试 _PAGE_MAX_RETRY 次，退避 1.5s / 3.0s。
+    """
+    last_err = None
+    for attempt in range(_PAGE_MAX_RETRY):
+        try:
+            return page, _sina_get(node, page, _PAGE_SIZE), None
+        except Exception as e:
+            last_err = e
+            if attempt < _PAGE_MAX_RETRY - 1:
+                time.sleep(1.5 * (attempt + 1))
+    return page, None, last_err
+
+
+def _fetch_pages_concurrent(node, pages):
+    """并发拉取一批页，返回 [(page, diff, err)]（与入参 pages 同序）。"""
+    results = {}
+    workers = max(1, min(_FETCH_WORKERS, len(pages)))
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        futures = {ex.submit(_fetch_one_page, node, p): p for p in pages}
+        for fut in as_completed(futures):
+            page, diff, err = fut.result()
+            results[page] = (page, diff, err)
+    return [results[p] for p in pages]
+
+
 def _fetch_sina_stock_list():
-    """从新浪财经分页拉全市场 A 股列表（含容错）。
+    """从新浪财经**分批并发**拉全市场 A 股列表（含容错）。
 
     返回 (stocks, ok)：
       ok=True  —— 所有页均成功且条数达 _MIN_STOCK_COUNT 下限，可安全落库
       ok=False —— 存在失败页或条数不足；stocks 仅供诊断，调用方不得写入缓存
 
-    容错策略（AC-1.1/1.2）：
+    容错策略（沿用 specs/fix-stocklist-and-cache-health/ 的三条语义）：
       - 单页失败按 1.5s / 3.0s 递增退避重试至多 _PAGE_MAX_RETRY 次；
-      - 仍失败则记 warning 并继续拉取后续页，不因单页异常终止；
-      - 连续失败页达 _MAX_CONSECUTIVE_FAIL 时判定网络不可用，提前结束（避免长时间空转）。
+      - 仍失败则记失败页并继续拉取后续批，不因单页异常终止；
+      - 一整批全部失败才累加连续失败数，达 _MAX_CONSECUTIVE_FAIL 时判定网络
+        不可用并提前结束（避免断网时空转发满上限）。
+
+    并发按「批」推进（每批 _FETCH_WORKERS 页）而非一次甩出全部页，
+    这样断网时只需发一批请求即可停下（AC-3.1 / AC-4.3）。
     """
     node = "hs_a"  # 沪深A股（含北交所）
-    page_size = 100
-    max_page = 200  # 上限保护
     all_data = []
     failed_pages = []
     consecutive_fail = 0
 
-    for page in range(1, max_page + 1):
-        diff, last_err = None, None
-        for attempt in range(_PAGE_MAX_RETRY):
-            try:
-                diff = _sina_get(node, page, page_size)
-                break
-            except Exception as e:
-                last_err = e
-                if attempt < _PAGE_MAX_RETRY - 1:
-                    time.sleep(1.5 * (attempt + 1))   # 递增退避
+    for start in range(1, _MAX_PAGE + 1, _FETCH_WORKERS):
+        pages = list(range(start, min(start + _FETCH_WORKERS, _MAX_PAGE + 1)))
+        results = _fetch_pages_concurrent(node, pages)
 
-        if diff is None:
-            failed_pages.append(page)
-            consecutive_fail += 1
-            _log.warning("[stocklist] 第 %d 页重试 %d 次仍失败：%s",
-                         page, _PAGE_MAX_RETRY, last_err)
+        batch_failed = 0
+        reached_end = False
+        for page, diff, err in results:
+            if err is not None:
+                failed_pages.append(page)
+                batch_failed += 1
+                _log.warning("[stocklist] 第 %d 页重试 %d 次仍失败：%s",
+                             page, _PAGE_MAX_RETRY, err)
+                continue
+            if not diff:
+                reached_end = True
+                continue
+            all_data.extend(diff)
+            if len(diff) < _PAGE_SIZE:      # 尾页
+                reached_end = True
+
+        if batch_failed == len(pages):
+            consecutive_fail += len(pages)
+            _log.error("[stocklist] 连续 %d 页请求失败，判定网络不可用，提前结束拉取",
+                       consecutive_fail)
             if consecutive_fail >= _MAX_CONSECUTIVE_FAIL:
-                _log.error("[stocklist] 连续 %d 页请求失败，判定网络不可用，提前结束拉取",
-                           consecutive_fail)
                 break
-            continue
+        else:
+            consecutive_fail = 0
 
-        consecutive_fail = 0
-        if not diff:
+        if reached_end:
             break
-        all_data.extend(diff)
-        if len(diff) < page_size:
-            break
+    else:
+        if len(all_data) >= _MAX_PAGE * _PAGE_SIZE:
+            _log.warning("[stocklist] 已用尽页数上限 %d，末页仍满 %d 条，"
+                         "可能需要上调 _MAX_PAGE", _MAX_PAGE, _PAGE_SIZE)
 
     out = _normalize_stock_rows(all_data)
+    out.sort(key=lambda r: r["code"])   # 并发后顺序不定，排序保证产物确定性
     ok = (not failed_pages) and (len(out) >= _MIN_STOCK_COUNT)
     if not ok:
         _log.error("[stocklist] 拉取不完整：失败页=%s 解析后条数=%d（下限 %d）",
@@ -494,7 +685,6 @@ def run_screen(indicator_code, config=None):
 
 # ── 异步选股（后台线程） ────────────────────────────────
 
-import threading
 import uuid
 
 
