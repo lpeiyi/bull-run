@@ -214,6 +214,7 @@ input[type=checkbox]{accent-color:var(--cyan);width:16px;height:16px}
 .sent-score{font-size:56px;font-weight:800;line-height:1;text-shadow:0 0 18px rgba(0,229,255,.4)}
 .sent-level{font-size:16px;color:var(--amber);font-weight:700;margin-bottom:6px}
 .sent-dims{display:flex;flex-wrap:wrap;gap:6px}
+.sent-note{font-size:11px;color:var(--dim);margin-bottom:6px}
 .dim{font-size:11.5px;background:rgba(124,92,255,.08);color:#a8b7ff;padding:3px 9px;border-radius:8px;border:1px solid rgba(124,92,255,.22);white-space:nowrap}
 
 /* 情绪分维度贡献度条形图 */

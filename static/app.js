@@ -671,7 +671,10 @@ function renderBoardsTop10(boards) {
   }).join("");
 }
 
-$("#ov-refresh").addEventListener("click", () => loadOverview(true));
+$("#ov-refresh").addEventListener("click", () => {
+  loadOverview(true);
+  loadDistribution(true);   // 分布图同样强制刷新（force=1 穿透清单缓存的时效判断）
+});
 
 // ── 概览指数自动刷新 ──────────────────────
 let ovRefreshTimer = null;
@@ -1057,14 +1060,35 @@ $("#ln-toggle").addEventListener("click", () => {
 // ═══ 涨跌统计柱状图 ═════════════════════
 let distChart = null;
 
-async function loadDistribution() {
+async function loadDistribution(force) {
   try {
-    const d = await fetch("/api/market_distribution").then((x) => x.json());
+    const url = force ? "/api/market_distribution?force=1" : "/api/market_distribution";
+    const d = await fetch(url).then((x) => x.json());
     renderDistribution(d);
   } catch (e) { console.error("涨跌统计加载失败", e); }
 }
 
 function renderDistribution(d) {
+  const statusEl = document.getElementById("dist-status");
+  const total = d.total || 0;
+  // 无有效快照：不画柱，改用空态提示（不得用 0 值画出看似正常的柱状图）
+  if (d.degraded || total === 0) {
+    if (statusEl) {
+      statusEl.textContent = d.reason ? `数据不可用（${d.reason}）` : "数据不可用";
+    }
+    const boxEmpty = document.getElementById("distribution-chart");
+    if (boxEmpty) {
+      if (distChart) { try { distChart.dispose(); } catch (_) {} distChart = null; }
+      boxEmpty.innerHTML = `<div class="boards-empty" style="height:260px">暂无有效行情快照</div>`;
+    }
+    renderDistSummary(d);
+    return;
+  }
+  // 数据时点标注：非当前时段的旧快照要显式说明「基于何时」
+  if (statusEl) {
+    if (d.stale) statusEl.textContent = `基于 ${d.snapshot_at || "未知时点"} 的旧快照`;
+    else statusEl.textContent = d.snapshot_at ? `数据时间 ${d.snapshot_at}` : "";
+  }
   // X 轴共 11 个柱子：最左侧涨停 + 9 个涨跌幅区间 + 最右侧跌停
   const ranges = d.ranges || [];
   const bars = [
@@ -1074,7 +1098,6 @@ function renderDistribution(d) {
   ];
   const labels = bars.map(r => r.name);
   const counts = bars.map(r => r.count);
-  const total = d.total || 1;
   // 颜色：涨停红、跌停绿、涨幅红、跌幅绿、平盘灰
   const colors = bars.map(r => {
     const n = r.name;
@@ -1105,7 +1128,12 @@ function renderDistribution(d) {
       label: { show: true, position: "top", color: "#c6d2ef", fontSize: 11 }
     }]
   };
-  if (!distChart) distChart = echarts.init(document.getElementById("distribution-chart"));
+  const chartBox = document.getElementById("distribution-chart");
+  if (!distChart) {
+    // 从空态恢复时先清掉占位元素，避免与图表叠加显示
+    if (chartBox && chartBox.querySelector(".boards-empty")) chartBox.innerHTML = "";
+    distChart = echarts.init(chartBox);
+  }
   distChart.setOption(option, true);
   distChart.resize();
   // 柱状图下方渲染涨跌汇总双色进度条
@@ -1117,6 +1145,11 @@ function renderDistSummary(d) {
   const box = $("#dist-summary");
   if (!box) return;
   const total = d.total || 0;
+  if (!total) {
+    // 无有效数据时不显示「上涨 0 家」这类会被误读为正常结果的文案
+    box.innerHTML = `<div class="dist-bar-labels"><span class="hint">暂无有效数据</span></div>`;
+    return;
+  }
   const up = d.up_count || 0;
   const down = d.down_count || 0;
   const upPct = total ? (up / total * 100) : 0;
@@ -1160,6 +1193,12 @@ async function loadSentiment(force) {
   $("#se-level").textContent = s.level;
   sentRefreshTs = Date.now();
   $("#se-date").textContent = `刷新于 ${fmtRefreshTime(sentRefreshTs)}`;
+  // 与分布图的「全市场实时快照」形成区分：情绪卡是东财涨停池的收盘口径
+  const seNote = $("#se-note");
+  if (seNote) {
+    const td = fmtDate(s.trade_date || s.date || "");
+    seNote.textContent = td ? `口径：东财涨停池（收盘）· ${td}` : "口径：东财涨停池（收盘）";
+  }
   $("#se-dims").innerHTML = [
     `涨停 ${s.zt_count}`, `跌停 ${s.dt_count}`, `炸板率 ${s.break_rate}%`, `晋级率 ${s.promo_rate}%`, `最高 ${s.max_height}板`,
   ].map((d) => `<span class="dim">${d}</span>`).join("");
