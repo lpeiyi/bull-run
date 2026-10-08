@@ -42,6 +42,19 @@ def _reset_screener_state():
     screener._LAST_ATTEMPT.update(ts=0.0, usable=False)
 
 
+@pytest.fixture(autouse=True)
+def _reset_em_api_state():
+    """重置 core.em_api 的进程级状态（池缓存 / 限流时间戳 / 间隔 / 失败计数）。
+
+    与 `_reset_screener_state` 同理：这些状态会跨用例残留 —— 前一个用例留下的
+    30 秒池缓存会让后一个用例的"本应发起请求"断言变成假通过。
+    """
+    from core import em_api
+    em_api.reset_state()
+    yield
+    em_api.reset_state()
+
+
 @pytest.fixture
 def kline_factory():
     """生成等差性质的 K 线 DataFrame（供 tdx 等需要完整 OHLCV 的用例使用）。
