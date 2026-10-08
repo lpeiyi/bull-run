@@ -10,43 +10,20 @@
    因此历史情绪序列（近15日曲线）里跌停维度按 0 计算，仅在「当日/实时」情绪分中生效。
 """
 import math
-import time
-import random
+import logging
 from datetime import datetime, timedelta
 
-import requests
-
-import logging
-from core import legu
-from core.data import UA
-
-EM_SESSION = requests.Session()
-EM_SESSION.headers.update({"User-Agent": UA})
-_em_last = [0.0]
-ZTB_UT = "7eea3edcaed734bea9cbfc24409ed989"
-
-
-def _em_get(url, params):
-    """东财接口统一限流（串行，约1秒/次，防封）"""
-    wait = 1.0 - (time.time() - _em_last[0])
-    if wait > 0:
-        time.sleep(wait + random.uniform(0.1, 0.3))
-    try:
-        return EM_SESSION.get(url, params=params, timeout=10)
-    finally:
-        _em_last[0] = time.time()
+from core import em_api, legu
 
 
 def _em_pool(endpoint, date, sort="fbt:asc"):
-    """拉取东财涨停相关池。注意：昨日涨停池必须用 zs:desc 排序才能取到数据"""
-    url = f"https://push2ex.eastmoney.com/{endpoint}"
-    params = {"ut": ZTB_UT, "dpt": "wz.ztzt", "Pageindex": 0,
-              "pagesize": 10000, "sort": sort, "date": date}
-    try:
-        r = _em_get(url, params)
-        return (r.json().get("data") or {}).get("pool") or []
-    except Exception:
-        return []
+    """拉取东财涨停相关池（薄包装）。
+
+    真正的限流（全局唯一间隔，防封）与 30 秒进程内缓存都在 `core.em_api`。
+    保留原函数名，兼容既有调用方（如 `core/emotion_history.py` 的 `sentiment._em_pool`）。
+    注意：昨日涨停池必须用 zs:desc 排序才能取到数据（sort 参与缓存 key）。
+    """
+    return em_api.pool(endpoint, date, sort)
 
 
 def _find_recent_trade_date():
@@ -60,12 +37,6 @@ def _find_recent_trade_date():
         if _em_pool("getTopicZTPool", ymd):
             return ymd
     return None
-
-
-def _zt_codes(date):
-    """涨停池代码 + 最高连板高度"""
-    pool = _em_pool("getTopicZTPool", date)
-    return [p["c"] for p in pool], max((p.get("lbc", 0) for p in pool), default=0)
 
 
 def _zb_count(date):
@@ -108,23 +79,43 @@ def _is_dt_stock(stock):
     return is_limit_stock(stock, -1)
 
 
+# 只读快照的可接受陈旧度（见 specs/cut-sentiment-latency/design.md §2.3）
+_DT_SNAPSHOT_PEEK_MIN_AGE = 600            # 跌停家数：窗口内至少可容忍 10 分钟旧的快照
+_NAME_SNAPSHOT_MAX_AGE = 7 * 24 * 3600     # code→名称：慢变字段，放宽到 7 天
+
+
+def _dt_peek_max_age():
+    """跌停家数允许读取的快照最大年龄（秒）。
+
+    行情窗口内 = max(120s, 10min) = 10 分钟；窗口外 = 12 小时（那时本就是收盘快照）。
+    刻意不"一过期就切东财"：那样情绪卡的跌停数会与同屏的涨跌统计图口径分叉，
+    正是 P0-2 刚消除掉的"同屏两数矛盾"（见 design §2.3）。
+    """
+    from core.screener import _cache_ttl
+    return max(_cache_ttl(), _DT_SNAPSHOT_PEEK_MIN_AGE)
+
+
 def _dt_list_sina():
-    """基于新浪全市场行情返回当日跌停股票列表。
-    load_stock_list 有 24 小时缓存，不会频繁请求。
-    返回: 跌停股票列表（list）；失败返回 None（用于调用方回退东财）。
+    """基于**已落盘**的全市场快照返回当日跌停股票列表。
+
+    只读：**不会触发一次全市场拉取**。无可用快照时返回 None，由调用方回退东财
+    （改造前走 load_stock_list()，快照过期就会阻塞 3~4 秒，见 AC-3.2）。
+    返回: 跌停股票列表（list）；无可用快照返回 None。
     """
     try:
-        from core.screener import load_stock_list
-        stocks = load_stock_list()
+        from core.screener import peek_stock_list
+        stocks, _ts = peek_stock_list(max_age=_dt_peek_max_age())
     except Exception:
+        return None
+    if not stocks:
         return None
     return [s for s in stocks if _is_dt_stock(s)]
 
 
 def _dt_count(date):
     """跌停家数。
-    当日实时：用新浪全市场行情计算（load_stock_list 有 24 小时缓存，覆盖全市场）。
-    历史日期：新浪列表只有当日数据，回退东财 getTopicDTPool 兜底（可能不全）。
+    当日实时：优先用已落盘的全市场快照按分档阈值判定（与涨跌统计图同口径）。
+    快照不可用或为历史日期：回退东财 getTopicDTPool 兜底（可能不全）。
     """
     today = datetime.now().strftime("%Y%m%d")
     if date == today:
@@ -148,11 +139,16 @@ def _filter_zt_pool(zt_list):
     """过滤涨停池：排除 ST/*ST 股票和上市不足 60 日的新股，对齐开盘啦口径。
 
     东财涨停池 c 字段为 pure_code 格式（如 "600903"），故映射 key 用 pure_code。
+    名称是慢变字段，所以快照放宽到 7 天且不要求行情有效性 —— 盘前那份 price 大量为 0
+    的快照"行是全的"，取名称完全够用（见 design §2.3）。无可用快照时降级为"不过滤"。
     load_stock_list 无 list_date 字段，新股过滤会被跳过（不影响 ST 过滤）。
     """
     try:
-        from core.screener import load_stock_list
-        stocks = load_stock_list()  # 有 24h 缓存
+        from core.screener import peek_stock_list
+        stocks, _ts = peek_stock_list(max_age=_NAME_SNAPSHOT_MAX_AGE,
+                                      require_valid=False)
+        if not stocks:
+            return zt_list
         stock_map = {s.get("pure_code", ""): s for s in stocks}
         cutoff = datetime.now() - timedelta(days=60)
         filtered = []

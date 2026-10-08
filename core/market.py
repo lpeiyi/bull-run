@@ -6,8 +6,6 @@
 import logging
 import math
 import os
-import time
-import random
 import re
 import json
 import urllib.request
@@ -15,38 +13,25 @@ from datetime import datetime, timedelta
 
 import requests
 
+from core import em_api
 from core.data import UA, real_quotes, to_symbol, kline
 
+# 仅用于指数日K成交额（push2his 域，不是 push2ex 的池接口），不参与池限流
 EM_SESSION = requests.Session()
 EM_SESSION.headers.update({"User-Agent": UA})
-_em_last = [0.0]
-ZTB_UT = "7eea3edcaed734bea9cbfc24409ed989"
 
 # 首页顶部指数条
 INDEX_CODES = ["sh000001", "sz399001", "sz399006", "sh000688",
                "sh000016", "sh000905", "sh000300", "sh000852"]
 
 
-def _em_get(url, params):
-    """东财接口统一限流（串行，约1秒/次，防封）"""
-    wait = 1.0 - (time.time() - _em_last[0])
-    if wait > 0:
-        time.sleep(wait + random.uniform(0.1, 0.3))
-    try:
-        return EM_SESSION.get(url, params=params, timeout=12)
-    finally:
-        _em_last[0] = time.time()
-
-
 def _em_pool(endpoint, date):
-    url = f"https://push2ex.eastmoney.com/{endpoint}"
-    params = {"ut": ZTB_UT, "dpt": "wz.ztzt", "Pageindex": 0,
-              "pagesize": 10000, "sort": "fbt:asc", "date": date}
-    try:
-        r = _em_get(url, params)
-        return (r.json().get("data") or {}).get("pool") or []
-    except Exception:
-        return []
+    """拉取东财涨停相关池（薄包装）。
+
+    真正的限流（全局唯一间隔，防封）与 30 秒进程内缓存都在 `core.em_api`。
+    保留原函数名与签名，既有调用方与注释含义不变。
+    """
+    return em_api.pool(endpoint, date, sort="fbt:asc")
 
 
 def find_trade_date():
