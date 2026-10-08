@@ -500,3 +500,75 @@ def test_meta_keeps_backward_compatible_keys(iso, clock):
         assert k in meta, "既有键不得移除：%s" % k
     assert meta["valid"] is True
     assert meta["stale"] is False
+
+
+# ══════════════════════════════════════════════════════
+# 7. 只读入口 peek_stock_list（见 specs/cut-sentiment-latency/design.md §2.2）
+# ══════════════════════════════════════════════════════
+
+def test_peek_returns_fresh_snapshot(iso, clock, monkeypatch):
+    """新鲜快照可直接读出，且全程不发起网络请求。"""
+    _no_fetch(monkeypatch)
+    _write_cache(clock.now - 30, _norm(2000), version=3, complete=True, valid=True)
+
+    stocks, ts = screener.peek_stock_list()
+
+    assert stocks is not None and len(stocks) == 2000
+    assert ts == clock.now - 30
+
+
+def test_peek_expired_snapshot_is_unavailable_without_fetch(iso, clock, monkeypatch):
+    """窗口内 TTL=120s：300 秒前的快照不可用，且**不得**触发拉取。"""
+    _no_fetch(monkeypatch)
+    _write_cache(clock.now - 300, _norm(2000), version=3, complete=True, valid=True)
+
+    assert screener.peek_stock_list() == (None, None)
+
+
+def test_peek_max_age_can_be_relaxed(iso, clock, monkeypatch):
+    """放宽 max_age 后同一份快照变得可用（跌停家数用 10 分钟口径即靠此）。"""
+    _no_fetch(monkeypatch)
+    _write_cache(clock.now - 300, _norm(2000), version=3, complete=True, valid=True)
+
+    stocks, ts = screener.peek_stock_list(max_age=600)
+
+    assert stocks is not None
+    assert ts == clock.now - 300
+
+
+def test_peek_missing_file_returns_none(iso, clock, monkeypatch):
+    _no_fetch(monkeypatch)
+
+    assert screener.peek_stock_list() == (None, None)
+
+
+def test_peek_too_few_rows_returns_none(iso, clock, monkeypatch):
+    """条数不足 _MIN_STOCK_COUNT 的一律视为不可用（防止用残缺文件做统计）。"""
+    _no_fetch(monkeypatch)
+    _write_cache(clock.now - 10, _norm(100), version=3, complete=True, valid=True)
+
+    assert screener.peek_stock_list() == (None, None)
+
+
+def test_peek_validity_gate_and_override(iso, clock, monkeypatch):
+    """v2 旧缓存（无 valid 标记）当场判定：默认拒绝废快照，显式放开后可用。"""
+    _no_fetch(monkeypatch)
+    junk = _norm(2000, 0.635)                       # price>0 仅 36.5%，盘前形态
+    _write_cache(clock.now - 30, junk, version=2, complete=True)
+
+    assert screener.peek_stock_list() == (None, None)
+
+    stocks, _ts = screener.peek_stock_list(require_valid=False)
+    assert stocks is not None and len(stocks) == 2000
+
+
+def test_peek_does_not_change_load_stock_list_meta_behavior(iso, clock, monkeypatch):
+    """peek 是纯读：调用它不得影响正式取数入口的判据。"""
+    _no_fetch(monkeypatch)
+    _write_cache(clock.now - 30, _norm(2000), version=3, complete=True, valid=True)
+
+    screener.peek_stock_list()
+    stocks, meta = screener.load_stock_list_meta()
+
+    assert len(stocks) == 2000
+    assert meta["degraded"] is False

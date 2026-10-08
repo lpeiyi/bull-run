@@ -317,6 +317,35 @@ def load_stock_list_meta(force=False):
         return _fallback_or_empty(cached, now, reason)
 
 
+def peek_stock_list(max_age=None, require_valid=True):
+    """只读**已落盘**的全市场快照。**绝不发起网络请求。**
+
+    - `max_age=None`        → 用正式时效判据（行情窗口内 `_TTL_TRADING` / 窗口外 `_TTL_IDLE`）
+    - `max_age=<秒>`        → 放宽为"年龄不超过该值即算可用"
+    - `require_valid=False` → 不要求 price>0 占比达标（取名称等慢变字段时用）
+
+    返回 `(stocks, ts)`；不可用返回 `(None, None)`。
+
+    与 `load_stock_list_meta()` 的分工：后者是"取数"入口，缓存过期时会**联网拉取**；
+    本函数是"读数"入口，只认已经躺在地上的快照 —— 供情绪分这类
+    "有快照就用、没有就降级"的路径使用，避免被一次数秒的全市场拉取阻塞
+    （见 specs/cut-sentiment-latency/design.md §2.2）。
+    """
+    cached = _read_stock_list_cache()
+    if cached is None:
+        return None, None
+    stocks, meta = cached
+    if not stocks or len(stocks) < _MIN_STOCK_COUNT:
+        return None, None
+    ts = meta.get("ts", 0) or 0
+    limit = _cache_ttl() if max_age is None else max_age
+    if not ts or (time.time() - ts) > limit:
+        return None, None
+    if require_valid and not _meta_valid_or_unknown(stocks, meta):
+        return None, None
+    return stocks, ts
+
+
 def _normalize_stock_rows(raw_items):
     """新浪原始条目 → 标准结构（纯函数，无网络，便于脱网测试）。
 
